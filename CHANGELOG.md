@@ -11,23 +11,40 @@ across pages by themselves. Tables of contents are numbered and indented. Plus f
 capture that were quietly losing content, and clearer, safer behaviour around anything that
 deletes.
 
-**At a glance**
+### At a glance
 
-*New:* region capture in notes · Clip Region toolbar button · redesigned e-ink icons ·
-inserts continue onto the next page
+**New**
 
-*Table of contents:* outline numbering and indenting · a cleaner header · one page, and it
-says so when there are more headings
+- Region capture in notes
+- A "Clip Region" button on the toolbar
+- Redesigned icons for e-ink
+- Inserts continue onto the next page
 
-*Fixed:* ruled lines baked into note captures · layers missing from note captures · auto-trim
-on note clips · clips removed when the insert never landed · a split clip corrupting later
-pieces · "Always Allow" giving worse captures · silent permission failures · Jump-to-Source
-failing without explanation
+**Table of contents**
 
-*Worth knowing:* rebuilding a table of contents replaces the whole page and asks first · a
-rebuild that finds fewer headings asks first · Clear All asks first · missing clip images say
-so · resuming an interrupted insert needs "Remove clips after inserting" on · **update over the
-top, do not uninstall first**
+- Entries numbered and indented by level
+- A cleaner header
+- One page, and it says so when there are more headings
+
+**Fixed**
+
+- Ruled lines baked into note captures
+- Layers missing from note captures
+- Auto-trim not working on note clips
+- Clips removed when the insert never landed
+- A split clip corrupting the pieces after it
+- "Always Allow" giving worse captures
+- Silent permission failures
+- Jump-to-Source failing without explanation
+
+**Worth knowing**
+
+- Rebuilding a table of contents replaces the whole page, and asks first
+- A rebuild that finds fewer headings asks first
+- Clear All asks first
+- Missing clip images say so
+- Resuming an interrupted insert needs "Remove clips after inserting" on
+- **Update over the top, do not uninstall first**
 
 ### ✨ New
 
