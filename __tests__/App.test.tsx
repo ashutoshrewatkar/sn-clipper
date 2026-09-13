@@ -1800,6 +1800,94 @@ describe('App Component', () => {
     expect(removeLinkSpy).toHaveBeenCalledWith('c2', 0);
   });
 
+  // --- Image (region) clip source links -------------------------------------------------
+  // A GitHub reporter on 0.3.0 saw no link at all after inserting a region clip. Image clips
+  // were inserting a lone arrow glyph under the image's right edge; text clips get a readable
+  // [name, p. N] label. These three cases pin the labelled form, the unchanged vertical
+  // reserve, and the no-document-path case.
+
+  const imageClip = (overrides: Partial<ClipItem> = {}, elemOverrides: any = {}): ClipItem => ({
+    id: 'img1',
+    text: '',
+    elements: [{
+      type: 'image',
+      imagePath: '/sdcard/.data/plugin/region1.png',
+      width: 600,
+      height: 400,
+      documentPath: '/sdcard/Books/physics.pdf',
+      documentPage: 6,
+      articleName: 'physics.pdf',
+      ...elemOverrides,
+    }],
+    articleName: 'physics.pdf',
+    timestamp: 300,
+    ...overrides,
+  });
+
+  it('inserts a labelled source link for an image clip, not a bare arrow', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([imageClip()]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertImage).toHaveBeenCalled();
+    const linkCall = (PluginNoteAPI.insertTextLink as jest.Mock).mock.calls[0][0];
+    // documentPage is 0-indexed in storage and shown 1-indexed to the user.
+    expect(linkCall.showText).toBe('[physics, p. 7 \u2197]');
+    expect(linkCall.fullText).toBe('[physics, p. 7 \u2197]');
+    expect(linkCall.destPath).toBe('/sdcard/Books/physics.pdf');
+    expect(linkCall.destPage).toBe(6);
+    expect(linkCall.linkType).toBe(2);
+    // Label starts at the text-box left margin, not tucked at the right edge.
+    expect(linkCall.rect.left).toBe(100);
+  });
+
+  it('reserves the same vertical space for an image clip link as the bare arrow did', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([imageClip()]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Same arithmetic the jump-icon path used: fontSize 44 -> linkFont 35 -> linkHeight 47.
+    const fontSizeLink = Math.round(44 * 0.8);
+    const linkHeight = Math.round(fontSizeLink * 1.35);
+    const linkCall = (PluginNoteAPI.insertTextLink as jest.Mock).mock.calls[0][0];
+    expect(linkCall.fontSize).toBe(fontSizeLink);
+    expect(linkCall.rect.bottom - linkCall.rect.top).toBe(linkHeight);
+    // The image still fitted on the page it started on: one insert, no deferral to a new page.
+    expect((PluginNoteAPI.insertImage as jest.Mock).mock.calls.length).toBe(1);
+  });
+
+  it('inserts an image clip with no link and no reserved space when it has no document path', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([
+      imageClip({ id: 'img2', articleName: '' }, { documentPath: undefined, documentPage: undefined, articleName: undefined }),
+    ]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertImage).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
+  });
+
   it('calls ImageCropModule.openFileDirectly with path and page when clicking Jump on an existing file', async () => {
     const { FileUtils } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);

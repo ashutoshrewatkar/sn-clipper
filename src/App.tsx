@@ -1248,6 +1248,9 @@ export default function App() {
 
       const { FileUtils } = require('sn-plugin-lib');
 
+      // The bare-arrow form. Still used by the text paths below, and kept for image clips too
+      // even though they no longer call it: backlog item 7 turns the choice between this and
+      // the labelled form into a user setting. Do not delete it.
       const performInsertJumpIcon = async (destPath: string, destPage: number, topY: number, rightMargin: number) => {
         const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
           ? (destPage !== undefined ? 0 : 1)
@@ -1635,9 +1638,16 @@ export default function App() {
             if (item.documentPath && linkSource) {
               const validLinks = await getValidLinksForGroup([item]);
               if (validLinks.length > 0) {
-                const iconTop = currentY + linkGap;
-                await performInsertJumpIcon(validLinks[0].path, validLinks[0].page, iconTop, 100 + maxWidth);
-                currentY = iconTop + linkHeight;
+                // Image clips used to get a bare arrow glyph tucked under the image's right
+                // edge, which a user does not read as a link (GitHub report, 2026-09-13:
+                // "the link does not appear", region clips only). They now get the same
+                // labelled form text clips get: [Document name, p. N] plus the arrow glyph.
+                // The rect keeps the identical vertical extent (topY to topY + linkHeight),
+                // so linkReserve and maxH above are unaffected and an image that fitted
+                // before still fits.
+                const linkTop = currentY + linkGap;
+                await performInsertLabeledLink(validLinks[0].path, validLinks[0].page, validLinks[0].articleName, linkTop, maxWidth);
+                currentY = linkTop + linkHeight;
               }
             }
             currentY += gap;

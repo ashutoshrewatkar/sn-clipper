@@ -4,6 +4,16 @@ What changed in each release, from a user's point of view.
 
 *Entries before 0.3.0 are in the older, development-oriented style.*
 
+## [Unreleased]
+
+### Fixed
+
+- **Region clips now show a readable source link.** Inserting a clipped region used to place a
+  single small arrow under the right edge of the image, which was easy to miss entirely. It now
+  gets the same labelled link text clips get, `[Document name, p. 7 ↗]`, starting at the left
+  margin. The space reserved for the link is unchanged, so an image that fitted on a page before
+  still fits.
+
 ## [0.3.0] - 2026-09-06
 
 The biggest release so far. Clip regions from your **notes**, not just documents. Inserts flow
