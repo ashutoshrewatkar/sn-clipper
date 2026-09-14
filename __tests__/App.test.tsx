@@ -1848,7 +1848,7 @@ describe('App Component', () => {
     expect(linkCall.rect.left).toBe(100);
   });
 
-  it('reserves the same vertical space for an image clip link as the bare arrow did', async () => {
+  it('gives the image clip link the same height the bare arrow had', async () => {
     const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(true);
 
@@ -1866,8 +1866,80 @@ describe('App Component', () => {
     const linkCall = (PluginNoteAPI.insertTextLink as jest.Mock).mock.calls[0][0];
     expect(linkCall.fontSize).toBe(fontSizeLink);
     expect(linkCall.rect.bottom - linkCall.rect.top).toBe(linkHeight);
-    // The image still fitted on the page it started on: one insert, no deferral to a new page.
+    // This pins the link element's own geometry only. That linkReserve still governs
+    // pagination is a separate claim, tested by the pair below.
     expect((PluginNoteAPI.insertImage as jest.Mock).mock.calls.length).toBe(1);
+  });
+
+  // The reserve itself. Page is 1872 tall, gap 32, so a page whose existing content ends at
+  // 1368 leaves availHeight 440 once currentY advances to 1400. The image is 400 tall and the
+  // link reserve is linkSpace (linkHeight 47 + gap 32 = 79), so 400 fits and 400+79 does not.
+  // The two cases below straddle that boundary, which is the only way to show the reserve is
+  // still applied: a test on the link rect alone passes whatever linkReserve does.
+  const fillToBottomOf = (bottom: number) => ({
+    success: true,
+    result: [{ type: 500, textBox: { textRect: { left: 100, top: 100, right: 1304, bottom } } }],
+  });
+
+  it('still reserves link space when deciding whether an image fits the page', async () => {
+    const { PluginFileAPI, PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginFileAPI.getElements.mockResolvedValueOnce(fillToBottomOf(1368));
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([imageClip()]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    const insertPromise = insertBtn.props.onPress();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    // 400 + 79 > 440, so the image defers rather than being placed with its link off-page.
+    await act(async () => {
+      const dialog = root.root.findByType(ConfirmationDialog);
+      expect(dialog.props.title).toBe('Page Full');
+      dialog.props.onConfirm();
+      await insertPromise;
+    });
+    expect(PluginNoteAPI.insertImage).not.toHaveBeenCalled();
+  });
+
+  it('reserves no link space for an image clip that has no document path', async () => {
+    const { PluginFileAPI, PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    PluginFileAPI.getElements.mockResolvedValueOnce(fillToBottomOf(1368));
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([
+      imageClip({ id: 'img3', articleName: '' }, { documentPath: undefined, documentPage: undefined, articleName: undefined }),
+    ]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // Same 440 of space, but no link to reserve for, so the same 400-tall image fits.
+    expect(PluginNoteAPI.insertImage).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
+  });
+
+  it('does not link an image clip when Link-source is off', async () => {
+    const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(true);
+    jest.spyOn(StorageService, 'getInsertSourceLink').mockResolvedValue(false);
+
+    jest.spyOn(StorageService, 'loadClips').mockResolvedValue([imageClip({ id: 'img4' })]);
+    const root = await renderApp();
+
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    expect(PluginNoteAPI.insertImage).toHaveBeenCalled();
+    expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
   });
 
   it('inserts an image clip with no link and no reserved space when it has no document path', async () => {

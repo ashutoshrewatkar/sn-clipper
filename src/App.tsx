@@ -1248,9 +1248,9 @@ export default function App() {
 
       const { FileUtils } = require('sn-plugin-lib');
 
-      // The bare-arrow form. Still used by the text paths below, and kept for image clips too
-      // even though they no longer call it: backlog item 7 turns the choice between this and
-      // the labelled form into a user setting. Do not delete it.
+      // The bare-arrow form. Still used by the text paths below. Image clips no longer call
+      // it, but it is kept rather than inlined because backlog item 7 turns the choice
+      // between this and the labelled form into a user setting. Do not delete it.
       const performInsertJumpIcon = async (destPath: string, destPage: number, topY: number, rightMargin: number) => {
         const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
           ? (destPage !== undefined ? 0 : 1)
