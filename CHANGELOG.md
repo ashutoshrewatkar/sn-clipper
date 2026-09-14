@@ -14,6 +14,25 @@ What changed in each release, from a user's point of view.
   margin. The space reserved for the link is unchanged, so an image that fitted on a page before
   still fits.
 
+- **Clipper no longer deletes a source link it cannot check.** This affects **all** clips, text
+  as well as regions. When Clipper could not reach a clip's source document while inserting, it
+  removed the link from the clip permanently, and the link did not come back when the document
+  became reachable again. The check it relied on cannot tell a deleted file apart from one it
+  simply is not allowed to read at that moment, or one on a card that is not mounted, so links
+  to documents that were still there were being thrown away.
+
+  Now an unreachable source is skipped for that insert and the link is kept. Removing a link is
+  still offered, but only where it always asked first: tap Jump on the clip, and Clipper offers
+  to remove it.
+
+  Note that this stops the loss, it cannot undo it. A clip that has already lost its source
+  reference has no record left to restore, and needs to be clipped again.
+
+- **Clearer wording when a source document cannot be opened.** The message used to say the
+  document "has been deleted", which Clipper has no way of knowing. It now says the document
+  could not be opened, that it may have been moved, renamed or deleted, or may not be readable
+  right now, and that the highlight text is kept either way.
+
 ## [0.3.0] - 2026-09-06
 
 The biggest release so far. Clip regions from your **notes**, not just documents. Inserts flow

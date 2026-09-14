@@ -775,9 +775,12 @@ export default function App() {
       const { FileUtils, PluginCommAPI } = require('sn-plugin-lib');
       const exists = await FileUtils.exists(element.documentPath);
       if (!exists) {
-        setConfirmTitle('Broken Source Link');
+        // "has been deleted" asserted something `exists` cannot establish: see the note in
+        // getValidLinksForGroup on why a false is not evidence of absence. Wording approved
+        // by Vinod 2026-09-13; button labels deliberately unchanged.
+        setConfirmTitle('Source not found');
         setConfirmDescription(
-          `The original document "${element.articleName || clip.articleName}" has been deleted. Would you like to remove the source link from this clipping? (The highlight text will be kept).`
+          `Clipper could not open "${element.articleName || clip.articleName}". It may have been moved, renamed or deleted, or Clipper may not be able to read it right now. The highlight text is kept either way.`
         );
         setConfirmConfirmLabel('Remove Link');
         setConfirmCancelLabel('Keep Link');
@@ -1334,6 +1337,21 @@ export default function App() {
         const uniqueLinksMap = new Map<string, { path: string; page: number; articleName: string }>();
         for (const item of groupItems) {
           if (item.documentPath) {
+            // A false from `exists` is NOT evidence the document is gone, so it must never
+            // drive a delete. RTNFileModule.exists (sn-plugin-lib) has no promise.reject at
+            // all and returns java.io.File.exists(), which maps an EACCES from stat to false
+            // rather than throwing. A permission wall, an unmounted volume, a file:// prefix
+            // on the stored path and a genuinely deleted file all arrive here as the same
+            // value. The same Java file calls promise.reject eight times elsewhere, so that
+            // resolve(false) is deliberate, not an oversight.
+            //
+            // This code used to call removeLinkFromElement here, permanently wiping
+            // documentPath, documentPage and articleName from the stored clip. That is
+            // heuristic-driven destruction with no confirmation, and it is unrecoverable:
+            // once the fields are gone there is nothing left to rebuild the link from, even
+            // if the document reappears. A link we cannot resolve is now skipped for this
+            // insert and left in storage. Removal lives in handleOpenSource, which asks
+            // first. Ruled 2026-09-13, see design_instance/REVIEW-2026-09-13.md.
             const exists = await FileUtils.exists(item.documentPath);
             if (exists) {
               const key = `${item.documentPath}#${item.documentPage || 0}`;
@@ -1342,18 +1360,6 @@ export default function App() {
                 page: item.documentPage || 0,
                 articleName: item.articleName || 'Unknown Document',
               });
-            } else {
-              try {
-                const matchClip = clips.find(c => c.id === item.clipId);
-                if (matchClip && matchClip.elements) {
-                  const elemIdx = matchClip.elements.findIndex(
-                    el => el.documentPath === item.documentPath && el.documentPage === item.documentPage
-                  );
-                  if (elemIdx !== -1) {
-                    await ClipService.removeLinkFromElement(matchClip.id, elemIdx);
-                  }
-                }
-              } catch (e) {}
             }
           }
         }

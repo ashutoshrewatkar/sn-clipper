@@ -1765,7 +1765,11 @@ describe('App Component', () => {
     expect(linkCall.rect.top - boxCall.textRect.top).toBeLessThan(lineHeight);
   });
 
-  it('skips TextLinks in runInsertClips and cleans up storage when file is missing', async () => {
+  // Was: "cleans up storage when file is missing", asserting removeLinkFromElement was called.
+  // Inverted 2026-09-13. FileUtils.exists returns false for a permission refusal, an unmounted
+  // volume or a file:// prefix just as readily as for a deleted file, so that cleanup was
+  // destroying recoverable links on a guess. Skipping the link stays; the delete goes.
+  it('skips the TextLink but keeps the stored link when the file cannot be resolved', async () => {
     const { PluginNoteAPI, FileUtils } = require('sn-plugin-lib');
     FileUtils.exists.mockResolvedValue(false);
 
@@ -1795,9 +1799,33 @@ describe('App Component', () => {
       await insertBtn.props.onPress();
     });
 
+    // The text still goes in, and no link is drawn for a source we cannot resolve.
     expect(PluginNoteAPI.insertText).toHaveBeenCalled();
     expect(PluginNoteAPI.insertTextLink).not.toHaveBeenCalled();
-    expect(removeLinkSpy).toHaveBeenCalledWith('c2', 0);
+    // But the stored clip is not touched.
+    expect(removeLinkSpy).not.toHaveBeenCalled();
+  });
+
+  it('leaves documentPath on the stored element after an insert with an unresolvable file', async () => {
+    const { FileUtils } = require('sn-plugin-lib');
+    FileUtils.exists.mockResolvedValue(false);
+
+    await ClipService.addClip('Highlight with a source', 'physics.pdf', '/sdcard/Books/physics.pdf', 4);
+    const before = (await ClipService.getClips())[0];
+    expect(before.elements[0].documentPath).toBe('/sdcard/Books/physics.pdf');
+
+    const root = await renderApp();
+    const insertBtn = root.root.findByProps({ label: 'Insert into open Note' });
+    await act(async () => {
+      await insertBtn.props.onPress();
+    });
+
+    // The link survives in storage, so it comes back the moment the file is readable again.
+    const after = (await ClipService.getClips()).find((c) => c.id === before.id);
+    expect(after).toBeTruthy();
+    expect(after!.elements[0].documentPath).toBe('/sdcard/Books/physics.pdf');
+    expect(after!.elements[0].documentPage).toBe(4);
+    expect(after!.elements[0].articleName).toBe('physics.pdf');
   });
 
   // --- Image (region) clip source links -------------------------------------------------
