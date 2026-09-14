@@ -1394,6 +1394,97 @@ describe('App Component', () => {
     expect(popoverHeader.length).toBeGreaterThanOrEqual(1);
   });
 
+  // --- crop-context accounting -----------------------------------------------------------
+  // Diagnosis for candidate A of the 0.3.0 region-clip finding: if the context query fails
+  // here the clip is stored with no documentPath and can never link, and the only trace used
+  // to be a bare console.warn. These pin the failure modes apart, which is the whole point of
+  // the line: a single "context obtained" boolean would not make the next report attributable.
+
+  const cropContextLine = (logSpy: jest.SpyInstance): string => {
+    const call = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].startsWith('crop-context:'));
+    return call ? call[0] : '';
+  };
+
+  it('logs crop-context with the query outcomes when the document context resolves', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: 3 });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    await ClipService.setLaunchMode('crop');
+    await renderApp();
+
+    expect(cropContextLine(logSpy)).toBe(
+      'crop-context: pathQuery=ok pathUsed=query pageQuery=ok pageUsed=3 pageDefaulted=false isNote=false'
+    );
+    logSpy.mockRestore();
+  });
+
+  it('distinguishes a failed, an empty and a thrown context query in crop-context', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // success:false is not the same as success:true with nothing in it, and neither is a throw.
+    // Collapsing them would lose exactly the distinction this line exists to record.
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: false });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: true, result: undefined });
+    await ClipService.setLaunchMode('crop');
+    await renderApp();
+    expect(cropContextLine(logSpy)).toContain('pathQuery=failed');
+    expect(cropContextLine(logSpy)).toContain('pageQuery=empty');
+
+    logSpy.mockClear();
+    PluginCommAPI.getCurrentFilePath.mockRejectedValue(new Error('no host'));
+    await ClipService.setLaunchMode('crop');
+    await renderApp();
+    // The page call is never reached when the path query throws, so claiming any outcome for
+    // it, including 'threw', would assert something that was never observed.
+    expect(cropContextLine(logSpy)).toContain('pathQuery=threw');
+    expect(cropContextLine(logSpy)).toContain('pageQuery=skipped');
+
+    logSpy.mockRestore();
+  });
+
+  it('blames only the page query when the path resolved and the page call throws', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });
+    PluginCommAPI.getCurrentPageNum.mockRejectedValue(new Error('host gone'));
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await ClipService.setLaunchMode('crop');
+    await renderApp();
+
+    // A shared catch used to overwrite the successful path query, printing
+    // `pathQuery=threw pathUsed=query`, which contradicts itself and leaves a reader unable
+    // to tell which half to believe.
+    const line = cropContextLine(logSpy);
+    expect(line).toContain('pathQuery=ok');
+    expect(line).toContain('pathUsed=query');
+    expect(line).toContain('pageQuery=threw');
+    expect(line).toContain('pageDefaulted=true');
+    logSpy.mockRestore();
+  });
+
+  it('records pathUsed=none and a defaulted page when no context is available at all', async () => {
+    const { PluginCommAPI } = require('sn-plugin-lib');
+    PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '' });
+    PluginCommAPI.getCurrentPageNum.mockResolvedValue({ success: false });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    await ClipService.setLaunchMode('crop');
+    await renderApp();
+
+    const line = cropContextLine(logSpy);
+    // This is the state that produces a clip which can never link to its source.
+    expect(line).toContain('pathQuery=empty');
+    expect(line).toContain('pathUsed=none');
+    expect(line).toContain('pageDefaulted=true');
+    expect(line).toContain('pageUsed=0');
+    logSpy.mockRestore();
+  });
+
   it('handles custom page cropping flow successfully', async () => {
     const { PluginCommAPI } = require('sn-plugin-lib');
     PluginCommAPI.getCurrentFilePath.mockResolvedValue({ success: true, result: '/sdcard/Books/Manual.pdf' });

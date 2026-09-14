@@ -391,24 +391,66 @@ export default function App() {
 
           let filePath: string | undefined;
           let pageNum = 0;
+          // Diagnosis only, not a fix. A region clip captured here is stored with whatever
+          // document context this block manages to obtain (runCropSave passes
+          // `currentFilePath || undefined`), so a failure here produces a clip that can never
+          // link to its source, and until now the only trace was a bare console.warn. These
+          // outcomes are recorded separately rather than as one "context obtained" boolean
+          // because the two long-standing typecheck errors on this path already distinguish
+          // them: `filePath` is `string | undefined` and `targetFile` is `string | null`, so a
+          // single boolean would answer with less resolution than the types imply.
+          let pathQuery = 'ok';
+          // 'skipped', not 'ok', until the page call is actually reached: a throw from the
+          // path query aborts this block before the page is ever queried, and reporting an
+          // outcome for a call that never ran would assert more than was observed. That is
+          // the failure this whole line exists to avoid.
+          let pageQuery = 'skipped';
+          let pageAttempted = false;
           try {
             const fileRes = await PluginCommAPI.getCurrentFilePath();
+            if (!fileRes) pathQuery = 'absent';
+            else if (!fileRes.success) pathQuery = 'failed';
+            else if (!fileRes.result) pathQuery = 'empty';
             if (fileRes && fileRes.success && fileRes.result) {
               filePath = fileRes.result;
               setCurrentFilePath(filePath);
               setIsNoteFile(!isDocFile(filePath));
             }
+            pageAttempted = true;
             const pageRes = await PluginCommAPI.getCurrentPageNum();
+            pageQuery = 'ok';
+            if (!pageRes) pageQuery = 'absent';
+            else if (!pageRes.success) pageQuery = 'failed';
+            else if (pageRes.result === undefined || pageRes.result === null) pageQuery = 'empty';
             if (pageRes && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
               pageNum = pageRes.result;
               setCurrentPageNum(pageNum);
             }
           } catch (e) {
+            // A throw aborts the block, so exactly one of the two calls is responsible, and
+            // `pageAttempted` says which. Blaming both (or overwriting a path query that had
+            // already succeeded) produced lines like `pathQuery=threw pathUsed=query`, which
+            // contradict themselves and cost more trust than a coarse label would.
+            if (pageAttempted) pageQuery = 'threw';
+            else pathQuery = 'threw';
             console.warn('Metadata query in crop failed:', e);
           }
 
           const targetFile = filePath || currentFilePath;
           const isNote = targetFile ? checkIsNoteFile(targetFile) : false;
+
+          // One line per region capture, so a report of a clip that will not link is
+          // attributable instead of a guess. `pathUsed` is the field that matters: `stale`
+          // means this launch got no path of its own and fell back to state left over from an
+          // earlier launch, so the clip may be stamped with the wrong document rather than
+          // with none. `pageDefaulted` matters for the same reason: a failed page query is
+          // indistinguishable later from a real page 0.
+          console.log(
+            `crop-context: pathQuery=${pathQuery} ` +
+            `pathUsed=${filePath ? 'query' : (currentFilePath ? 'stale' : 'none')} ` +
+            `pageQuery=${pageQuery} pageUsed=${pageNum} ` +
+            `pageDefaulted=${pageQuery !== 'ok'} isNote=${isNote}`,
+          );
 
           let bgShot: any = null;
           if (!isNote) {
