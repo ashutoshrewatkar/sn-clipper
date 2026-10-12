@@ -49,7 +49,7 @@ interface FloatingMenuProps {
 type View3 = 'main' | 'picker' | 'browse';
 
 const PANEL_W = 300;
-const PANEL_MAX_H = 440;
+const PANEL_MAX_H = 560;
 const GAP = 10;
 
 const norm = (p: string): string => (p.startsWith('file://') ? p.substring(7) : p);
@@ -139,7 +139,7 @@ export function FloatingMenu(props: FloatingMenuProps) {
         </View>
 
         {view === 'main' && (
-          <View style={styles.body}>
+          <ScrollView style={styles.bodyScroll} contentContainerStyle={styles.body}>
             <View style={styles.targetCaption}>
               <Text style={styles.targetCaptionLabel}>A tap switches between</Text>
               <Text style={styles.targetCaptionValue} numberOfLines={2}>
@@ -152,7 +152,7 @@ export function FloatingMenu(props: FloatingMenuProps) {
             {pill('≡', 'Text Clippings', onTextClips)}
             {pill('⇄', 'Switch to…', () => setView('picker'))}
             {canUndo ? pill('↩', 'Undo last place', onUndo) : null}
-          </View>
+          </ScrollView>
         )}
 
         {view === 'picker' && (
@@ -206,6 +206,7 @@ const styles = StyleSheet.create({
   headerBtn: { minWidth: 40, paddingVertical: 8, alignItems: 'center' },
   headerBtnText: { fontSize: 20, fontWeight: 'bold', color: '#000000' },
   title: { flex: 1, fontSize: 17, fontWeight: 'bold', color: '#000000', textAlign: 'center' },
+  bodyScroll: { flexShrink: 1 },
   body: { padding: 14 },
   targetCaption: {
     marginBottom: 12,

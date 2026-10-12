@@ -207,9 +207,12 @@ class FloatingButtonModule(reactContext: ReactApplicationContext) :
             val button = buildButtonView()
             var params = layoutParams
             if (params == null) {
+                // Explicit window size (not WRAP_CONTENT): the badge wrapper made WRAP_CONTENT
+                // mis-measure on this firmware and clip the button to a sliver. A fixed box the
+                // size of the button draws the whole oval reliably.
                 params = WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    dp(56f),
+                    dp(56f),
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     else
