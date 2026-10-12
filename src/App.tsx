@@ -21,7 +21,6 @@ import {
 import { ClipService } from './services/ClipService';
 import { NavService, normalizePath } from './services/NavService';
 import { FloatingButton, FloatingAnchor } from './services/FloatingButton';
-import { captureFromReaderAndReopen } from './services/RegionCapture';
 import { FloatingMenu, PickItem, MenuAnchor } from './components/FloatingMenu';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
@@ -282,9 +281,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    // The view is foreground while mounted — pause the native auto-hide watcher (resumed on
-    // AppState 'background' when the view closes).
-    FloatingButton.setWatcherPaused(true);
     // Enter the menu immediately on mount if a long-press is pending (prevents the flash).
     maybeEnterMenu();
     // Sync current list from Storage on open
@@ -611,16 +607,10 @@ export default function App() {
 
     const handleAppStateChange = (nextAppState: any) => {
       if (nextAppState === 'active') {
-        // Our view is foreground: pause the native foreground-app watcher (pluginhost IS the
-        // foreground app now, so polling it is wasted dumpsys work).
-        FloatingButton.setWatcherPaused(true);
         // Show the menu instantly if a long-press is pending, before the async context check,
         // so the dashboard doesn't flash first.
         maybeEnterMenu();
         checkContext();
-      } else {
-        // View went to the background (e.g. closePluginView): resume auto-hide polling.
-        FloatingButton.setWatcherPaused(false);
       }
     };
     const appStateSub = AppState.addEventListener('change', handleAppStateChange);
@@ -679,8 +669,6 @@ export default function App() {
       unsubscribe();
       appStateSub.remove();
       longPressSub.remove();
-      // Never leave the auto-hide watcher paused if this view tears down.
-      FloatingButton.setWatcherPaused(false);
       if (subscription) {
         subscription.remove();
       }
@@ -2645,17 +2633,19 @@ export default function App() {
       setIsCropping(true);
       return;
     }
-    // Notes render from the file; images crop directly (both handled in handleStartCropping).
-    if (f && (checkIsNoteFile(f) || isImageFile(f))) {
-      cropActiveRef.current = true;
-      setIsCropping(true);
-      setCropLoading(true);
-      handleStartCropping(f, currentPageNum);
-    } else {
-      // PDFs/EPUBs need the reader visible to screenshot: close the plugin view, let the
-      // reader repaint, capture it, then reopen straight into the crop UI.
-      captureFromReaderAndReopen();
+    // Render the page IN PLACE for every type (notes → layer render, images → direct crop,
+    // PDFs/EPUBs → generateCurrentDocImage), so we never close and reopen the plugin view. The
+    // old PDF path closed the view to screenshot the reader and reopened into crop, but on this
+    // firmware the delayed showPluginView() wasn't honored — the view never came back ("Capturing
+    // page…" then nothing). handleStartCropping already renders the current doc for DOC files.
+    if (!f) {
+      ToastAndroid.show('No document open to clip.', ToastAndroid.SHORT);
+      return;
     }
+    cropActiveRef.current = true;
+    setIsCropping(true);
+    setCropLoading(true);
+    handleStartCropping(f, currentPageNum);
   };
   const handleFloatPinTarget = async (item: PickItem) => {
     await NavService.setPinnedOverride({ path: item.path, page: item.page ?? 0 });
