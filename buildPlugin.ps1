@@ -751,13 +751,20 @@ function Build-AndroidApk {
                 }
             }
             
-            # Execute gradle build
-            $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'gradlew.bat', 'buildCustomApkDebug' -Wait -PassThru -NoNewWindow
+            # Execute gradle build.
+            # Invoke gradlew.bat by its FULL PATH ($gradlewPath): Start-Process -NoNewWindow
+            # ignores -WorkingDirectory on Windows PowerShell, so a bare 'gradlew.bat' is not
+            # found (it lives in android/) and the native build is silently skipped. gradlew.bat
+            # derives the project dir from its own location, so the full-path call is correct.
+            # --no-daemon: without it Gradle leaves a background daemon alive, and
+            # Start-Process -Wait blocks forever waiting for that daemon to exit (the build
+            # finishes but the script hangs right after BUILD SUCCESSFUL, never packaging).
+            $process = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$gradlewPath`"", 'buildCustomApkDebug', '--no-daemon' -WorkingDirectory $androidDir -Wait -PassThru -NoNewWindow
             $buildResult = $process.ExitCode
         }
         elseif (Get-Command 'gradle' -ErrorAction SilentlyContinue) {
             Write-ColorOutput 'Using gradle to execute buildCustomApkDebug task...' 'Green'
-            $process = Start-Process -FilePath 'gradle' -ArgumentList 'buildCustomApkDebug' -Wait -PassThru -NoNewWindow
+            $process = Start-Process -FilePath 'gradle' -ArgumentList 'buildCustomApkDebug', '--no-daemon' -WorkingDirectory $androidDir -Wait -PassThru -NoNewWindow
             $buildResult = $process.ExitCode
         }
         else {

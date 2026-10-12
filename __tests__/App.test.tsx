@@ -162,6 +162,10 @@ describe('App Component', () => {
     });
     PluginCommAPI.reloadFile.mockResolvedValue({ success: true, result: true });
     PluginFileAPI.getNoteTotalPageNum.mockResolvedValue({ success: true, result: 1 });
+    // These tests exercise the AUTO insert/layout engine. Manual text placement (which diverts a
+    // single text-only clip to the drag-to-place overlay instead of inserting) defaults ON in
+    // production, so force it OFF here so the engine assertions run the auto path.
+    jest.spyOn(StorageService, 'getPlaceTextManually').mockResolvedValue(false);
     // Reset persisted settings (combine/font/auto-remove) so they don't leak between tests.
     await require('@react-native-async-storage/async-storage').clear();
     mockCurrentPage = 0;
@@ -322,8 +326,10 @@ describe('App Component', () => {
     );
     expect(subtitle.props.children).toContain('1 of 2 clip(s) selected');
 
-    // 2. Click second card in selection mode to select it
-    const card2 = pressables.find((p: any) =>
+    // 2. Click second card in selection mode to select it. Re-query Pressables: entering
+    // selection mode unmounts each card's per-card Insert button, so the list captured above
+    // now holds stale (unmounted) nodes.
+    const card2 = root.root.findAllByType(Pressable).find((p: any) =>
       p.findAllByType(Text).some((t: any) => t.props.children === 'Snippet 2')
     );
     expect(card2).toBeTruthy();
@@ -411,7 +417,9 @@ describe('App Component', () => {
     const mergeBtn = root.root.findByProps({ label: 'Merge Selected' });
     expect(mergeBtn.props.disabled).toBe(true);
 
-    const card2 = pressables.find((p: any) =>
+    // Re-query: entering selection mode unmounts each card's per-card Insert button, so the
+    // earlier Pressable list now holds stale (unmounted) nodes.
+    const card2 = root.root.findAllByType(Pressable).find((p: any) =>
       p.findAllByType(Text).some((t: any) => t.props.children === 'Snippet 2')
     );
     await act(async () => {
@@ -662,7 +670,7 @@ describe('App Component', () => {
       ToastAndroid.LONG
     );
 
-    // The clip stays in Clipper, now holding only the un-inserted remainder.
+    // The clip stays in FlipClip, now holding only the un-inserted remainder.
     const clips = ClipService.getClipsSync();
     expect(clips.length).toBe(1);
     expect(clips[0].text.length).toBeLessThan(originalLen);
@@ -735,7 +743,7 @@ describe('App Component', () => {
 
     expect(PluginNoteAPI.insertText).not.toHaveBeenCalled();
     expect(PluginManager.closePluginView).toHaveBeenCalled();
-    // Clip remains queued in Clipper
+    // Clip remains queued in FlipClip
     const clips = ClipService.getClipsSync();
     expect(clips.length).toBe(1);
     expect(clips[0].text).toBe('Clip overflowing last page');
@@ -773,7 +781,7 @@ describe('App Component', () => {
 
     expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1); // chunk 1 on page 0
     expect(PluginManager.closePluginView).toHaveBeenCalled();
-    // Remainder stays queued in Clipper
+    // Remainder stays queued in FlipClip
     const clips = ClipService.getClipsSync();
     expect(clips.length).toBe(1);
     expect(clips[0].text).toContain('This is sentence number');
@@ -798,7 +806,7 @@ describe('App Component', () => {
 
     expect(PluginNoteAPI.insertText).toHaveBeenCalledTimes(1);
     expect(ToastAndroid.show).toHaveBeenCalledWith(
-      'Some clips could not be inserted; they are kept in Clipper.',
+      'Some clips could not be inserted; they are kept in FlipClip.',
       ToastAndroid.LONG
     );
     expect(ToastAndroid.show).not.toHaveBeenCalledWith('Clips inserted successfully!', ToastAndroid.SHORT);
@@ -1208,7 +1216,7 @@ describe('App Component', () => {
     expect(await StorageService.getInsertSourceLink()).toBe(false);
   });
 
-  it('hides the Clipper jump icon when Show-source is off', async () => {
+  it('hides the FlipClip jump icon when Show-source is off', async () => {
     jest.spyOn(StorageService, 'getShowSourceInClipper').mockResolvedValue(false);
     const testClips: ClipItem[] = [
       {
@@ -1275,7 +1283,7 @@ describe('App Component', () => {
     expect(clips.every((c) => c.elements.length === 1)).toBe(true);
   });
 
-  it('keeps inserted clips in Clipper when auto-remove is turned off', async () => {
+  it('keeps inserted clips in FlipClip when auto-remove is turned off', async () => {
     const { PluginFileAPI } = require('sn-plugin-lib');
     PluginFileAPI.getElements
       .mockResolvedValueOnce({ success: true, result: [] }) // scan: empty page
@@ -1309,7 +1317,7 @@ describe('App Component', () => {
     // Inserted clips are NOT removed, and the toast reflects that.
     expect(deleteSpy).not.toHaveBeenCalled();
     expect(ClipService.getClipsSync().length).toBe(1);
-    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted (kept in Clipper)', ToastAndroid.SHORT);
+    expect(ToastAndroid.show).toHaveBeenCalledWith('Clips inserted (kept in FlipClip)', ToastAndroid.SHORT);
   });
 
   it('ignores a second Insert tap while an insert is already running (no duplicate)', async () => {
@@ -1452,7 +1460,7 @@ describe('App Component', () => {
     });
 
     // Should return to list mode
-    const titleText = root.root.findByProps({ children: 'Clipper' });
+    const titleText = root.root.findByProps({ children: 'FlipClip' });
     expect(titleText).toBeTruthy();
   });
 
@@ -1532,7 +1540,7 @@ describe('App Component', () => {
         cancelCropBtn.props.onPress();
       });
     }
-    const titleText = rootCrop.root.findByProps({ children: 'Clipper' });
+    const titleText = rootCrop.root.findByProps({ children: 'FlipClip' });
     expect(titleText).toBeTruthy();
   });
 

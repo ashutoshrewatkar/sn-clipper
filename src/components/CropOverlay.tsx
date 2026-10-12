@@ -42,6 +42,13 @@ interface CropOverlayProps {
   loading: boolean;
   onCancel: () => void;
   onSave: (rect: CropRect) => void; // selection in image-space pixels
+  // Optional labels so the same overlay serves both "crop a region" and "place a text box".
+  title?: string;
+  saveLabel?: string;
+  loadingLabel?: string;
+  // Optional starting box (image-space px). When valid, the box opens here instead of a fresh
+  // 60%-centered box — used so placement remembers where you last put it.
+  initialRect?: CropRect | null;
 }
 
 // Minimum crop box size, in displayed (workspace) pixels.
@@ -63,7 +70,7 @@ const HANDLE_SIDES: Record<string, { l?: boolean; r?: boolean; t?: boolean; b?: 
   w: { l: true },
 };
 
-export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave }: CropOverlayProps) {
+export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave, title, saveLabel, loadingLabel, initialRect }: CropOverlayProps) {
   const [workspaceSize, setWorkspaceSize] = useState<Size>({ width: 0, height: 0 });
   const [cropBox, setCropBox] = useState<Box>({ left: 0, top: 0, width: 0, height: 0 });
   // While the WHOLE box is being dragged we hide the handles so the only moving
@@ -110,19 +117,32 @@ export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave }: 
   // invalidatePluginView repaint on gesture end).
   useEffect(() => {
     if (!initialized.current && displayedSize.width > 0 && displayedSize.height > 0) {
-      const w = Math.floor(displayedSize.width * 0.6);
-      const h = Math.floor(displayedSize.height * 0.6);
-      const box = {
-        left: Math.floor((displayedSize.width - w) / 2),
-        top: Math.floor((displayedSize.height - h) / 2),
-        width: w,
-        height: h,
-      };
+      let box: Box;
+      // Open at the remembered box (converted image px → displayed px, clamped) when given;
+      // otherwise a fresh ~60% centered box.
+      if (initialRect && imageSize.width > 0 && imageSize.height > 0 && initialRect.width > 0 && initialRect.height > 0) {
+        const sx = displayedSize.width / imageSize.width;
+        const sy = displayedSize.height / imageSize.height;
+        let width = Math.min(displayedSize.width, Math.max(MIN_SIZE, Math.round(initialRect.width * sx)));
+        let height = Math.min(displayedSize.height, Math.max(MIN_SIZE, Math.round(initialRect.height * sy)));
+        let left = Math.max(0, Math.min(Math.round(initialRect.x * sx), displayedSize.width - width));
+        let top = Math.max(0, Math.min(Math.round(initialRect.y * sy), displayedSize.height - height));
+        box = { left, top, width, height };
+      } else {
+        const w = Math.floor(displayedSize.width * 0.6);
+        const h = Math.floor(displayedSize.height * 0.6);
+        box = {
+          left: Math.floor((displayedSize.width - w) / 2),
+          top: Math.floor((displayedSize.height - h) / 2),
+          width: w,
+          height: h,
+        };
+      }
       pending.current = box;
       setCropBox(box);
       initialized.current = true;
     }
-  }, [displayedSize]);
+  }, [displayedSize, initialRect, imageSize]);
 
   // Commit a new box, throttled. `force` bypasses the throttle (use on touch-end).
   const commit = (box: Box, force: boolean) => {
@@ -268,7 +288,7 @@ export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave }: 
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
         <View style={styles.cropHeader}>
-          <Text style={styles.cropTitle}>Crop Page Section</Text>
+          <Text style={styles.cropTitle}>{title || 'Crop Page Section'}</Text>
           <Pressable onPress={onCancel} style={styles.cropCloseButton}>
             <Text style={styles.cropCloseText}>Cancel</Text>
           </Pressable>
@@ -276,7 +296,7 @@ export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave }: 
 
         {loading ? (
           <View style={styles.cropLoadingContainer}>
-            <Text style={styles.cropLoadingText}>Capturing page...</Text>
+            <Text style={styles.cropLoadingText}>{loadingLabel || 'Capturing page...'}</Text>
           </View>
         ) : (
           <View style={styles.cropWorkspace} onLayout={onWorkspaceLayout}>
@@ -321,7 +341,7 @@ export function CropOverlay({ pagePath, imageSize, loading, onCancel, onSave }: 
 
         {!loading && (
           <View style={styles.cropFooter}>
-            <HighContrastButton label="Clip selected region" onPress={handleSave} />
+            <HighContrastButton label={saveLabel || 'Clip selected region'} onPress={handleSave} />
           </View>
         )}
       </View>

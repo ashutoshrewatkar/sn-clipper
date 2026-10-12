@@ -21,6 +21,13 @@ export class ClipService {
   private static pendingCropShot: PendingCropShot | null = null;
   private static pendingShotListeners: Array<(shot: PendingCropShot | null) => void> = [];
 
+  // Single-slot, in-memory undo for the most recent single-clip placement. Holds the note
+  // elements that were added and the clip snapshot(s) to restore. Cleared on consume; a new
+  // placement replaces it (finalizing the previous — deleting any kept image file the previous
+  // undo would have restored but no longer can). In-memory only: an undo does not survive a
+  // plugin restart (acceptable for a convenience affordance).
+  private static lastInsertUndo: { notePath: string; page: number; nums: number[]; clips: ClipItem[] } | null = null;
+
   /**
    * Generate a unique clip id. Combines the timestamp, a monotonic counter (guarantees
    * uniqueness even for many ids created in the same millisecond, e.g. unmerging in a loop),
@@ -506,12 +513,14 @@ export class ClipService {
   static async updateButton(): Promise<void> {
     try {
       const count = this.clips.length;
-      const name = count > 0 ? `Clipper (${count})` : 'Clipper';
+      const name = count > 0 ? `FlipClip (${count})` : 'FlipClip';
+      // The single Plugins-menu entry (id 102) toggles the floating button; keep its label in
+      // sync with the clip count. showType 0 (background toggle), matching index.js.
       await PluginManager.registerButton(1, ['NOTE', 'DOC'], {
-        id: 100,
+        id: 102,
         name: name,
         icon: Image.resolveAssetSource(require('../../assets/icon/icon.png')).uri,
-        showType: 1, // Launches full-screen UI (App.tsx)
+        showType: 0,
       });
     } catch (err) {
       console.error('Failed to update button:', err);
@@ -522,11 +531,11 @@ export class ClipService {
     this.listeners.forEach(l => l());
   }
 
-  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'): Promise<void> {
+  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission' | 'floatmenu'): Promise<void> {
     await StorageService.setLaunchMode(mode as any);
   }
 
-  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'> {
+  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission' | 'floatmenu'> {
     return await StorageService.getLaunchMode() as any;
   }
 
@@ -596,6 +605,93 @@ export class ClipService {
     delete clip.elements[elementIndex].documentPath;
     delete clip.elements[elementIndex].documentPage;
     delete clip.elements[elementIndex].articleName;
+
+    await StorageService.saveClips(this.clips);
+    this.notifyListeners();
+  }
+
+  // --- single-clip placement undo -------------------------------------------------------------
+
+  /** Remove clip records WITHOUT deleting their backing image files (so an undo can restore
+   * them). Returns deep snapshots of the removed clips. */
+  static async removeClipsKeepingFiles(ids: string[]): Promise<ClipItem[]> {
+    await this.init();
+    const snapshots: ClipItem[] = [];
+    for (const id of ids) {
+      const clip = this.clips.find(c => c.id === id);
+      if (clip) snapshots.push(JSON.parse(JSON.stringify(clip)));
+    }
+    this.clips = this.clips.filter(c => !ids.includes(c.id));
+    await StorageService.saveClips(this.clips);
+    await this.updateButton();
+    this.notifyListeners();
+    return snapshots;
+  }
+
+  /** Record an undo for the most recent placement, finalizing any previous one (its kept image
+   * files are deleted if no current clip references them). */
+  static async recordInsertUndo(info: { notePath: string; page: number; nums: number[]; clips: ClipItem[] }): Promise<void> {
+    await this.finalizeInsertUndoFiles();
+    this.lastInsertUndo = info;
+  }
+
+  static getInsertUndo(): { notePath: string; page: number; nums: number[]; clips: ClipItem[] } | null {
+    return this.lastInsertUndo;
+  }
+
+  /** Return the current undo and clear the slot (the caller restores the clips, so the kept
+   * files are NOT deleted here). */
+  static consumeInsertUndo(): { notePath: string; page: number; nums: number[]; clips: ClipItem[] } | null {
+    const u = this.lastInsertUndo;
+    this.lastInsertUndo = null;
+    return u;
+  }
+
+  /** Delete any image files held by the current undo slot that no live clip references, then
+   * clear the slot. Used when a new undo supersedes the old (the old can no longer be undone). */
+  private static async finalizeInsertUndoFiles(): Promise<void> {
+    const prev = this.lastInsertUndo;
+    this.lastInsertUndo = null;
+    if (!prev) return;
+    try {
+      const { FileUtils } = require('sn-plugin-lib');
+      for (const clip of prev.clips) {
+        for (const el of (clip.elements || [])) {
+          if (el.type === 'image' && el.imagePath) {
+            const stillUsed = this.clips.some(c => (c.elements || []).some(e => e.imagePath === el.imagePath));
+            if (!stillUsed) { try { await FileUtils.deleteFile(el.imagePath); } catch (e) { /* best-effort */ } }
+          }
+        }
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  /** Restore clip snapshots to the front of the list (used by undo). */
+  static async restoreClips(clips: ClipItem[]): Promise<void> {
+    await this.init();
+    if (!clips || clips.length === 0) return;
+    this.clips = [...clips, ...this.clips];
+    await StorageService.saveClips(this.clips);
+    await this.updateButton();
+    this.notifyListeners();
+  }
+
+  /**
+   * Point an image element at a new backing PNG (e.g. after the erase/mask tool writes an edited
+   * copy), updating its stored dimensions too. The old file is the caller's to delete once this
+   * resolves. Writing a NEW path (rather than overwriting in place) sidesteps RN's Image URI
+   * cache so the edited image shows immediately.
+   */
+  static async updateElementImage(clipId: string, elementIndex: number, newPath: string, width?: number, height?: number): Promise<void> {
+    await this.init();
+    const clip = this.clips.find(c => c.id === clipId);
+    if (!clip || !clip.elements || elementIndex < 0 || elementIndex >= clip.elements.length) return;
+    const el = clip.elements[elementIndex];
+    if (el.type !== 'image') return;
+
+    el.imagePath = newPath;
+    if (typeof width === 'number' && width > 0) el.width = width;
+    if (typeof height === 'number' && height > 0) el.height = height;
 
     await StorageService.saveClips(this.clips);
     this.notifyListeners();

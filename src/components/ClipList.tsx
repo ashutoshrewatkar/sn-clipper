@@ -18,6 +18,7 @@ interface ClipListProps {
   onCardLongPress: (id: string) => void;
   onOpenSource?: (clip: ClipItem, element: any, elementIndex: number) => void;
   showSource?: boolean;
+  onInsert?: (clip: ClipItem) => void;
 }
 
 export function ClipList({
@@ -29,6 +30,7 @@ export function ClipList({
   onCardLongPress,
   onOpenSource,
   showSource,
+  onInsert,
 }: ClipListProps) {
   return (
     <FlatList
@@ -52,6 +54,7 @@ export function ClipList({
           onLongPress={() => onCardLongPress(clip.id)}
           onOpenSource={onOpenSource}
           showSource={showSource}
+          onInsert={onInsert}
         />
       )}
     />

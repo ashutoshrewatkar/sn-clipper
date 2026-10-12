@@ -655,14 +655,17 @@ export class IndexService {
       }
 
       // One line per scan, so a run that loses headings can be compared against one that
-      // did not without re-instrumenting. `dropped` is the number that matters.
-      console.log(
-        `ToC-scan: pages=${totalPages} rawTitles=${tally.raw} excluded=${tally.excluded} ` +
-        `typed=${tally.typed} tight=${tally.tight} recognized=${tally.recognized} ` +
-        `override=${tally.override} dropped=${tally.dropped}` +
-        (tally.dropped > 0 ? ` droppedOnPages=[${droppedPages.join(',')}]` : '') +
-        ` needingRecognition=${missingTextPages.size}`,
-      );
+      // did not without re-instrumenting. `dropped` is the number that matters. Dev-only: the
+      // production bundle sets __DEV__ false, so this is stripped from release logs.
+      if (typeof __DEV__ !== 'undefined' && __DEV__) {
+        console.log(
+          `ToC-scan: pages=${totalPages} rawTitles=${tally.raw} excluded=${tally.excluded} ` +
+          `typed=${tally.typed} tight=${tally.tight} recognized=${tally.recognized} ` +
+          `override=${tally.override} dropped=${tally.dropped}` +
+          (tally.dropped > 0 ? ` droppedOnPages=[${droppedPages.join(',')}]` : '') +
+          ` needingRecognition=${missingTextPages.size}`,
+        );
+      }
 
       // Apply custom title overrides from user edits (loaded above).
       try {

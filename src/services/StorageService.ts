@@ -43,6 +43,8 @@ const COMBINE_INSERTED_KEY = 'clipper_combine_inserted';
 const SHOW_SOURCE_KEY = 'clipper_show_source';
 const INSERT_SOURCE_LINK_KEY = 'clipper_insert_source_link';
 const ENABLE_TOC_KEY = 'clipper_enable_toc';
+const PLACE_TEXT_KEY = 'clipper_place_text_manually';
+const DOUBLETAP_HINT_KEY = 'clipper_doubletap_hint_shown';
 
 // Font-size presets for inserted note text. Medium is the historical default (44).
 export const INSERT_FONT_SIZES = { small: 32, medium: 44, large: 56 } as const;
@@ -258,7 +260,7 @@ export class StorageService {
   /**
    * Save the clipper launch mode.
    */
-  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'): Promise<void> {
+  static async setLaunchMode(mode: 'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission' | 'floatmenu'): Promise<void> {
     try {
       await AsyncStorage.setItem('clipper_launch_mode', mode);
       const { NativeModules } = require('react-native');
@@ -274,7 +276,7 @@ export class StorageService {
   /**
    * Retrieve the clipper launch mode from the durable store.
    */
-  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission'> {
+  static async getLaunchMode(): Promise<'normal' | 'crop' | 'prompt' | 'autoclipped' | 'permission' | 'floatmenu'> {
     try {
       const mode = await AsyncStorage.getItem('clipper_launch_mode');
       return (mode as any) || 'normal';
@@ -386,6 +388,47 @@ export class StorageService {
       await AsyncStorage.setItem(COMBINE_INSERTED_KEY, value ? 'true' : 'false');
     } catch (e) {
       console.error('Failed to save combine-inserted setting:', e);
+    }
+  }
+
+  /**
+   * Whether inserting a single text clip into a note first shows a drag-to-place box, so the
+   * user positions where the text lands instead of it auto-flowing below existing content
+   * (default true). Only affects single text-only clips; batches/images use the auto layout.
+   */
+  static async getPlaceTextManually(): Promise<boolean> {
+    try {
+      const value = await AsyncStorage.getItem(PLACE_TEXT_KEY);
+      if (value === null) return true;
+      return value === 'true';
+    } catch (e) {
+      console.error('Failed to load place-text setting:', e);
+    }
+    return true;
+  }
+
+  static async setPlaceTextManually(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(PLACE_TEXT_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save place-text setting:', e);
+    }
+  }
+
+  /** One-time hint flag: whether the "double-tap for the menu" tip has already been shown. */
+  static async getDoubleTapHintShown(): Promise<boolean> {
+    try {
+      return (await AsyncStorage.getItem(DOUBLETAP_HINT_KEY)) === 'true';
+    } catch (e) {
+      return true; // on error, suppress the hint rather than nag
+    }
+  }
+
+  static async setDoubleTapHintShown(value: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(DOUBLETAP_HINT_KEY, value ? 'true' : 'false');
+    } catch (e) {
+      /* best-effort */
     }
   }
 

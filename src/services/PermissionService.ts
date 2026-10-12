@@ -37,9 +37,9 @@ export const ERR_READ_DENIED = 1503; // read attempted without FILE:READ
 export const ERR_PATH_LOCKED = 1217; // path is encrypted/locked
 
 // Verified on Chauvet 2488_beta: the plugin's permission page is
-// Settings → Apps → Plugins → Clipper → Permissions, listing "Read Files" and "Modify Files"
+// Settings → Apps → Plugins → FlipClip → Permissions, listing "Read Files" and "Modify Files"
 // with Allow / Ask Every Time / Don't Allow.
-const SETTINGS_HINT = 'Set Read Files / Modify Files to Allow in Settings → Apps → Plugins → Clipper → Permissions.';
+const SETTINGS_HINT = 'Set Read Files / Modify Files to Allow in Settings → Apps → Plugins → FlipClip → Permissions.';
 
 export class PermissionService {
   /**
@@ -131,12 +131,12 @@ export class PermissionService {
   static messageForError(e: any): string | null {
     switch (this.errorCode(e)) {
       case ERR_READ_DENIED:
-        return `Clipper lost read access to your files. Try again, or: ${SETTINGS_HINT}`;
+        return `FlipClip lost read access to your files. Try again, or: ${SETTINGS_HINT}`;
       case ERR_WRITE_DENIED:
-        return `Clipper lost write access to your notes. Try again, or: ${SETTINGS_HINT}`;
+        return `FlipClip lost write access to your notes. Try again, or: ${SETTINGS_HINT}`;
       case ERR_NOT_DECLARED:
       case ERR_BAD_NAME:
-        return 'Clipper could not request file access on this firmware (permission not recognised).';
+        return 'FlipClip could not request file access on this firmware (permission not recognised).';
       case ERR_PATH_LOCKED:
         return 'That file is locked or encrypted. Unlock it on the device and try again.';
       default:

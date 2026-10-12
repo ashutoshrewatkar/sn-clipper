@@ -13,6 +13,8 @@ interface SettingsPopoverProps {
   onAutoRemoveChange: (value: boolean) => void;
   combineInserted: boolean;
   onCombineChange: (value: boolean) => void;
+  placeTextManually: boolean;
+  onPlaceTextChange: (value: boolean) => void;
   showSourceInClipper: boolean;
   onShowSourceChange: (value: boolean) => void;
   insertSourceLink: boolean;
@@ -47,6 +49,8 @@ export function SettingsPopover({
   onAutoRemoveChange,
   combineInserted,
   onCombineChange,
+  placeTextManually,
+  onPlaceTextChange,
   showSourceInClipper,
   onShowSourceChange,
   insertSourceLink,
@@ -73,7 +77,7 @@ export function SettingsPopover({
         >
           <View style={styles.popoverLabelBlock}>
             <Text style={styles.popoverRowLabel}>Remove clips after inserting</Text>
-            <Text style={styles.popoverRowHint}>Inserted clips are deleted from Clipper</Text>
+            <Text style={styles.popoverRowHint}>Inserted clips are deleted from FlipClip</Text>
           </View>
           <Badge selected={autoRemoveInserted} />
         </Pressable>
@@ -88,6 +92,18 @@ export function SettingsPopover({
             <Text style={styles.popoverRowHint}>Insert clips as one text block</Text>
           </View>
           <Badge selected={combineInserted} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => onPlaceTextChange(!placeTextManually)}
+          style={styles.popoverRow}
+          testID="setting-place-text"
+        >
+          <View style={styles.popoverLabelBlock}>
+            <Text style={styles.popoverRowLabel}>Place clips manually</Text>
+            <Text style={styles.popoverRowHint}>Drag a box to position a single clip (text or image)</Text>
+          </View>
+          <Badge selected={placeTextManually} />
         </Pressable>
 
         <View style={styles.popoverDivider} />
@@ -114,7 +130,7 @@ export function SettingsPopover({
           testID="setting-show-source"
         >
           <View style={styles.popoverLabelBlock}>
-            <Text style={styles.popoverRowLabel}>Show source &amp; jump in Clipper</Text>
+            <Text style={styles.popoverRowLabel}>Show source &amp; jump in FlipClip</Text>
             <Text style={styles.popoverRowHint}>Jump icon on each clip card</Text>
           </View>
           <Badge selected={showSourceInClipper} />

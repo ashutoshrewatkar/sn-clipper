@@ -9,7 +9,10 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import com.facebook.react.bridge.ReadableArray
 import java.io.FileOutputStream
 import java.io.File
@@ -144,6 +147,93 @@ class ImageCropModule(reactContext: ReactApplicationContext) : ReactContextBaseJ
             promise.reject("COMPOSITE_FAILED", e.message, e)
         } finally {
             canvasBitmap?.recycle()
+        }
+    }
+
+    // Raw pixel dimensions of an image, decoded the same way cropImage decodes it. Used by the
+    // image-crop path so the crop rect maps in the exact coordinate space the crop uses (RN's
+    // Image.getSize can report density-scaled values, which would shrink the selection to the
+    // upper-left corner).
+    @ReactMethod
+    fun getImageSize(sourcePath: String, promise: Promise) {
+        try {
+            val clean = if (sourcePath.startsWith("file://")) sourcePath.substring(7) else sourcePath
+            val f = File(clean)
+            if (!f.exists()) {
+                promise.reject("FILE_NOT_FOUND", "File does not exist: $clean")
+                return
+            }
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(clean, opts)
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+                promise.reject("INVALID_IMAGE", "Invalid image dimensions")
+                return
+            }
+            val map = Arguments.createMap()
+            map.putInt("width", opts.outWidth)
+            map.putInt("height", opts.outHeight)
+            promise.resolve(map)
+        } catch (e: Exception) {
+            promise.reject("ERROR", e.message, e)
+        }
+    }
+
+    /**
+     * Erase/mask tool: paint opaque white rectangles over the source image and save the result.
+     * This is the pre-insert substitute for the firmware limit that a picture pasted into a note
+     * cannot be erased — the user whites-out parts of the clip here, while it is still an ordinary
+     * PNG, before it ever becomes a note picture. `rects` is an array of {x,y,width,height} in the
+     * image's own pixel space (same space getImageSize / cropImage report). White matches the
+     * note paper, so a masked region reads as blank.
+     */
+    @ReactMethod
+    fun maskRectangles(sourcePath: String, rects: ReadableArray, destPath: String, promise: Promise) {
+        var working: Bitmap? = null
+        try {
+            val cleanSource = if (sourcePath.startsWith("file://")) sourcePath.substring(7) else sourcePath
+            val cleanDest = if (destPath.startsWith("file://")) destPath.substring(7) else destPath
+            val src = File(cleanSource)
+            if (!src.exists()) {
+                promise.reject("FILE_NOT_FOUND", "Source file does not exist: $cleanSource")
+                return
+            }
+
+            // Decode to a mutable copy so we can paint onto it. ARGB_8888 keeps alpha for note clips.
+            val decoded = BitmapFactory.decodeFile(cleanSource)
+                ?: run { promise.reject("DECODE_FAILED", "Could not decode image"); return }
+            working = if (decoded.isMutable) decoded else decoded.copy(Bitmap.Config.ARGB_8888, true)
+            if (working !== decoded) decoded.recycle()
+
+            val canvas = Canvas(working)
+            val paint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL; isAntiAlias = false }
+            val w = working.width
+            val h = working.height
+            for (i in 0 until rects.size()) {
+                val r = rects.getMap(i) ?: continue
+                val rx = r.getInt("x").toFloat()
+                val ry = r.getInt("y").toFloat()
+                val rw = r.getInt("width").toFloat()
+                val rh = r.getInt("height").toFloat()
+                val left = rx.coerceIn(0f, w.toFloat())
+                val top = ry.coerceIn(0f, h.toFloat())
+                val right = (rx + rw).coerceIn(0f, w.toFloat())
+                val bottom = (ry + rh).coerceIn(0f, h.toFloat())
+                if (right > left && bottom > top) {
+                    canvas.drawRect(RectF(left, top, right, bottom), paint)
+                }
+            }
+
+            val destFile = File(cleanDest)
+            destFile.parentFile?.mkdirs()
+            FileOutputStream(destFile).use { out ->
+                working.compress(Bitmap.CompressFormat.PNG, 100, out)
+                out.flush()
+            }
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.reject("MASK_FAILED", e.message, e)
+        } finally {
+            working?.recycle()
         }
     }
 

@@ -5,7 +5,7 @@
 // chronological text/image sub-elements.
 
 import React from 'react';
-import { StyleSheet, Text, View, Pressable, Image } from 'react-native';
+import { StyleSheet, Text, View, Pressable, Image, Modal } from 'react-native';
 import { ClipItem } from '../services/StorageService';
 
 /**
@@ -23,7 +23,7 @@ import { ClipItem } from '../services/StorageService';
  * actually fails, needs no filesystem call per card, and catches an unreadable or corrupt file
  * as well as a missing one.
  */
-function ClipImage({ path }: { path: string }) {
+function ClipImage({ path, onZoom }: { path: string; onZoom?: (path: string) => void }) {
   const [failed, setFailed] = React.useState(false);
 
   if (failed) {
@@ -31,19 +31,26 @@ function ClipImage({ path }: { path: string }) {
       <View style={styles.imageUnavailable} testID="clip-image-unavailable">
         <Text style={styles.imageUnavailableTitle}>Image unavailable</Text>
         <Text style={styles.imageUnavailableHint}>
-          The saved image is no longer on this device. Uninstalling Clipper removes stored clip
+          The saved image is no longer on this device. Uninstalling FlipClip removes stored clip
           images; updating over the existing plugin does not.
         </Text>
       </View>
     );
   }
 
+  // Tap the thumbnail to open it full-screen (region clips are small at 180px on e-ink).
+  // stopPropagation so a zoom tap doesn't also toggle card selection.
   return (
-    <Image
-      source={{ uri: 'file://' + path }}
-      style={styles.clipImage}
-      onError={() => setFailed(true)}
-    />
+    <Pressable
+      onPress={(e) => { e.stopPropagation(); onZoom?.(path); }}
+      disabled={!onZoom}
+    >
+      <Image
+        source={{ uri: 'file://' + path }}
+        style={styles.clipImage}
+        onError={() => setFailed(true)}
+      />
+    </Pressable>
   );
 }
 
@@ -74,9 +81,13 @@ interface ClipCardProps {
   onLongPress: () => void;
   onOpenSource?: (clip: ClipItem, element: any, elementIndex: number) => void;
   showSource?: boolean;
+  onInsert?: (clip: ClipItem) => void; // when set (note open, not selecting), shows a per-card Insert
 }
 
-export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress, onOpenSource, showSource = true }: ClipCardProps) {
+export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPress, onOpenSource, showSource = true, onInsert }: ClipCardProps) {
+  const [zoomPath, setZoomPath] = React.useState<string | null>(null);
+  // Only allow zoom when not selecting, so a tap in selection mode still toggles the card.
+  const onZoom = isSelectionMode ? undefined : (p: string) => setZoomPath(p);
   return (
     <Pressable
       onPress={onPress}
@@ -137,11 +148,35 @@ export function ClipCard({ clip, isSelected, isSelectionMode, onPress, onLongPre
             {elem.type === 'text' && elem.text ? (
               <Text style={styles.clipText}>{elem.text}</Text>
             ) : elem.type === 'image' && elem.imagePath ? (
-              <ClipImage path={elem.imagePath} />
+              <ClipImage path={elem.imagePath} onZoom={onZoom} />
             ) : null}
           </View>
         );
       })}
+
+      {/* Per-card Insert: a direct "insert just this clipping" action (only when a note is open
+          and we're not in multi-select). stopPropagation so it doesn't toggle selection. */}
+      {onInsert && !isSelectionMode && (
+        <Pressable
+          onPress={(e) => { e.stopPropagation(); onInsert(clip); }}
+          style={({ pressed }) => [styles.insertBtn, pressed && styles.insertBtnPressed]}
+          testID="card-insert-btn"
+        >
+          <Text style={styles.insertBtnText}>⤵  Insert this clip</Text>
+        </Pressable>
+      )}
+
+      {/* Full-screen zoom of a tapped image clip. */}
+      <Modal visible={!!zoomPath} transparent animationType="fade" onRequestClose={() => setZoomPath(null)}>
+        <Pressable style={styles.zoomBackdrop} onPress={() => setZoomPath(null)}>
+          {zoomPath ? (
+            <Image source={{ uri: 'file://' + zoomPath }} style={styles.zoomImage} resizeMode="contain" />
+          ) : null}
+          <View style={styles.zoomCloseBtn}>
+            <Text style={styles.zoomCloseText}>Close ✕</Text>
+          </View>
+        </Pressable>
+      </Modal>
     </Pressable>
   );
 }
@@ -259,5 +294,43 @@ const styles = StyleSheet.create({
     width: 20,
     height: 20,
     resizeMode: 'contain',
+  },
+  insertBtn: {
+    marginTop: 4,
+    alignSelf: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderWidth: 2,
+    borderColor: '#000000',
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+  },
+  insertBtnPressed: { backgroundColor: '#d0d0d0' },
+  insertBtnText: { fontSize: 14, fontWeight: 'bold', color: '#000000' },
+  zoomBackdrop: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  zoomImage: {
+    width: '100%',
+    height: '100%',
+  },
+  zoomCloseBtn: {
+    position: 'absolute',
+    top: 24,
+    right: 24,
+    borderWidth: 2,
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  zoomCloseText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
   },
 });

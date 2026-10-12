@@ -1,9 +1,10 @@
 {
-  "name": "SnClipper",
-  "version": "0.3.0",
+  "name": "flipclip",
+  "version": "1.0.0",
   "private": true,
   "license": "MIT",
-  "description": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
+  "description": "FlipClip — clip text and regions from PDFs, e-books and notes, place them into your notebooks, and switch between recent documents. A fork of sn-clipper by Vinod Nair (MIT).",
+  "author": "Ashutosh Rewatkar",
   "scripts": {
     "android": "react-native run-android",
     "ios": "react-native run-ios",

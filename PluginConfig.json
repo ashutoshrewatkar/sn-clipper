@@ -1,11 +1,11 @@
 {
-  "name": "Clipper",
-  "desc": "Collect, aggregate and manage text highlights from e-books and PDFs. Paste compiled text into your notes and digests.",
+  "name": "FlipClip",
+  "desc": "Clip text and regions from PDFs, e-books and notes, then aggregate and insert them into your notebooks. Position each clip with a drag-to-place box, mask parts with an erase tool before inserting, and undo the last placement. Adds an always-on-top floating button to switch between your two most-recent documents and open the clip tools; it checks the foreground app to auto-hide outside the Note and Document apps. All captures stay on your device — no network access. A fork of sn-clipper by Vinod Nair (MIT).",
   "iconPath": "assets/icon/icon.png",
-  "versionName": "0.3.0",
+  "versionName": "1.0.0",
   "versionCode": "352",
-  "pluginID": "yz6g3rirgcavgon9",
-  "pluginKey": "SnClipper",
+  "pluginID": "y6mc5rj2rebbd72e",
+  "pluginKey": "FlipClip",
   "jsMainPath": "index",
   "uses-permissions": [
     "plugin.permission.FILE:READ",

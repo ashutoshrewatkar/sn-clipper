@@ -91,17 +91,17 @@ describe('PermissionService', () => {
       const request = jest.fn().mockResolvedValue(2);
       withPermissionApis(jest.fn().mockResolvedValue(0), request);
 
-      await PermissionService.ensure(FILE_WRITE, 'Clipper needs write access to insert clips.');
+      await PermissionService.ensure(FILE_WRITE, 'FlipClip needs write access to insert clips.');
 
       expect(request).toHaveBeenCalledWith(
         FILE_WRITE,
-        'Clipper needs write access to insert clips.',
+        'FlipClip needs write access to insert clips.',
       );
     });
   });
 
   describe('ensure — hosts that do not gate', () => {
-    // These two cases are what keep Clipper working on firmware that predates the permission
+    // These two cases are what keep FlipClip working on firmware that predates the permission
     // system. If either regressed to 'blocked'/'denied', every gated flow would refuse to run
     // on older devices while the host was perfectly happy to serve the calls.
     it('returns granted when the SDK has no permission APIs at all', async () => {
@@ -197,9 +197,9 @@ describe('PermissionService', () => {
     });
 
     it('points the user at the real Settings route', () => {
-      // Verified on device: Settings -> Apps -> Plugins -> Clipper -> Permissions.
+      // Verified on device: Settings -> Apps -> Plugins -> FlipClip -> Permissions.
       expect(PermissionService.blockedMessage('Inserting clips')).toContain(
-        'Settings → Apps → Plugins → Clipper → Permissions',
+        'Settings → Apps → Plugins → FlipClip → Permissions',
       );
     });
   });

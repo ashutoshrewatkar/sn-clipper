@@ -1,7 +1,7 @@
 // SnClipper/src/app.tsx
 // Vinod Nair
 
-import React, { useEffect, useState, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import {
   SafeAreaView,
   StyleSheet,
@@ -16,12 +16,18 @@ import {
   TextInput,
   Modal,
   ActivityIndicator,
+  PixelRatio,
 } from 'react-native';
 import { ClipService } from './services/ClipService';
+import { NavService, normalizePath } from './services/NavService';
+import { FloatingButton, FloatingAnchor } from './services/FloatingButton';
+import { captureFromReaderAndReopen } from './services/RegionCapture';
+import { FloatingMenu, PickItem, MenuAnchor } from './components/FloatingMenu';
 import { ClipItem, ClipSubElement, StorageService, DEFAULT_INSERT_FONT_SIZE } from './services/StorageService';
 import { PluginManager } from 'sn-plugin-lib';
 import { HighContrastButton } from './components/HighContrastButton';
 import { CropOverlay } from './components/CropOverlay';
+import { EraseOverlay } from './components/EraseOverlay';
 import { PromptDialog } from './components/PromptDialog';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
 import { SearchBar } from './components/SearchBar';
@@ -30,7 +36,7 @@ import { SettingsPopover } from './components/SettingsPopover';
 import { IndexService, HeadingItem } from './services/IndexService';
 import { PermissionService, FILE_READ, FILE_WRITE } from './services/PermissionService';
 import { ClipList } from './components/ClipList';
-import { deriveArticleName, isDocFile, isNoteFile as checkIsNoteFile } from './utils/paths';
+import { deriveArticleName, isDocFile, isNoteFile as checkIsNoteFile, isOpenableFile, isImageFile } from './utils/paths';
 import { splitTextToFit, countWrappedLines, measureWrappedText } from './utils/text';
 import { pollForTargetPage } from './utils/pageNav';
 // Bundled at build time; versionCode is auto-incremented by buildPlugin.sh before bundling.
@@ -104,18 +110,40 @@ export default function App() {
       ? { width: shot.width, height: shot.height }
       : { width: 1404, height: 1872 };
   });
+  // The crop overlay doubles as a text-placement box. 'region' = crop an image region (default);
+  // 'placeText' = position a single text clip, then insert it at the drawn box. pendingPlaceClip
+  // holds the clip being placed while the overlay is up.
+  const [cropMode, setCropMode] = useState<'region' | 'placeText'>('region');
+  const [pendingPlaceClip, setPendingPlaceClip] = useState<ClipItem | null>(null);
+
+  // Pre-insert erase/mask tool state (whites-out parts of an image clip before it's inserted).
+  const [showErase, setShowErase] = useState(false);
+  const [eraseClipId, setEraseClipId] = useState<string | null>(null);
+  const [eraseElementIndex, setEraseElementIndex] = useState<number>(-1);
+  const [erasePath, setErasePath] = useState<string | null>(null);
+  const [eraseSize, setEraseSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [eraseLoading, setEraseLoading] = useState(false);
 
   // Search, Filter & Sort States
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [activeSourceFilter, setActiveSourceFilter] = useState<string | null>(null); // null = All Sources
+  const [clipTypeFilter, setClipTypeFilter] = useState<'all' | 'image' | 'text'>('all'); // Picture/Text Clippings
   const [activeSortMode, setActiveSortMode] = useState<'oldest' | 'newest'>('newest');
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showPromptDialog, setShowPromptDialog] = useState(false);
   const [promptText, setPromptText] = useState('');
 
-  // Settings (persisted). Auto-remove: delete clips from Clipper once they have
+  // Floating-button long-press menu state.
+  const [showFloatMenu, setShowFloatMenu] = useState(false);
+  const [floatRecents, setFloatRecents] = useState<PickItem[]>([]);
+  const [floatPinned, setFloatPinned] = useState<string | null>(null);
+  const [floatPairNames, setFloatPairNames] = useState<string[]>([]);
+  const [floatCanUndo, setFloatCanUndo] = useState(false);
+  const [floatAnchor, setFloatAnchor] = useState<MenuAnchor | null>(null);
+
+  // Settings (persisted). Auto-remove: delete clips from FlipClip once they have
   // been successfully inserted into a note. Defaults on.
   const [autoRemoveInserted, setAutoRemoveInserted] = useState(true);
   // Font size (px) for text inserted into notes. Defaults to Medium (44).
@@ -124,10 +152,13 @@ export default function App() {
   // per-clip inline source link, matching the plugin's per-document referencing purpose).
   const [combineInserted, setCombineInserted] = useState(false);
   // Source-reference toggles (both default on). Source is always captured; these only
-  // gate the two display surfaces: the Clipper card jump icon, and the inserted-note link.
+  // gate the two display surfaces: the FlipClip card jump icon, and the inserted-note link.
   const [showSourceInClipper, setShowSourceInClipper] = useState(true);
   const [insertSourceLink, setInsertSourceLink] = useState(true);
   const [enableToc, setEnableToc] = useState(false);
+  // Drag-to-place a single text clip before it lands in the note (default on). See
+  // StorageService.getPlaceTextManually.
+  const [placeTextManually, setPlaceTextManually] = useState(true);
 
   // Tab State: 'clips' | 'toc'
   const [activeTab, setActiveTab] = useState<'clips' | 'toc'>('clips');
@@ -185,7 +216,7 @@ export default function App() {
 
   // False until the first context check resolves the launch mode. We hold back the dashboard
   // render until then so a prompt/crop launch never flashes the dashboard first (the "glimpse
-  // of Clipper" before the prompt dialog).
+  // of FlipClip" before the prompt dialog).
   const [contextResolved, setContextResolved] = useState(false);
 
   // Confirmation Dialog States (for deleted/broken source links)
@@ -233,7 +264,29 @@ export default function App() {
   // launch mode and dismissing the active crop screen.
   const cropActiveRef = useRef(false);
 
+  // Switch to the floating menu synchronously if a long-press is pending, so the plugin view
+  // never briefly shows its previous dashboard state before the menu appears. The async
+  // context check (runContextCheck 'floatmenu' branch) then fills recents/current-file details.
+  const maybeEnterMenu = () => {
+    if (!FloatingButton.consumePendingMenu()) return false;
+    const raw = FloatingButton.getAnchor();
+    if (raw) {
+      const r = PixelRatio.get() || 1;
+      setFloatAnchor({ x: raw.x / r, y: raw.y / r, size: raw.size / r, screenW: raw.screenW / r, screenH: raw.screenH / r });
+    } else {
+      setFloatAnchor(null);
+    }
+    setShowFloatMenu(true);
+    setContextResolved(true);
+    return true;
+  };
+
   useEffect(() => {
+    // The view is foreground while mounted — pause the native auto-hide watcher (resumed on
+    // AppState 'background' when the view closes).
+    FloatingButton.setWatcherPaused(true);
+    // Enter the menu immediately on mount if a long-press is pending (prevents the flash).
+    maybeEnterMenu();
     // Sync current list from Storage on open
     ClipService.init().then(async () => {
       setClips(ClipService.getClipsSync());
@@ -251,7 +304,7 @@ export default function App() {
           const n = orphanedClipIds.length;
           const remove = await askUserConfirmation(
             'Stored images are missing',
-            `Clipper was uninstalled and reinstalled, which removes saved clip images. ${n} clip${n === 1 ? '' : 's'} now reference${n === 1 ? 's' : ''} a missing image. Remove ${n === 1 ? 'it' : 'them'}, or keep ${n === 1 ? 'it' : 'them'} without images?`,
+            `FlipClip was uninstalled and reinstalled, which removes saved clip images. ${n} clip${n === 1 ? '' : 's'} now reference${n === 1 ? 's' : ''} a missing image. Remove ${n === 1 ? 'it' : 'them'}, or keep ${n === 1 ? 'it' : 'them'} without images?`,
             'Remove',
             'Keep',
           );
@@ -271,6 +324,7 @@ export default function App() {
     StorageService.getShowSourceInClipper().then(setShowSourceInClipper);
     StorageService.getInsertSourceLink().then(setInsertSourceLink);
     StorageService.getEnableToc().then(setEnableToc);
+    StorageService.getPlaceTextManually().then(setPlaceTextManually);
 
     // Check active file context (Note vs Document)
     const runContextCheck = async () => {
@@ -286,7 +340,7 @@ export default function App() {
         }
 
         // Fallback for the background Clip button (index.js, showType:0): the host could not
-        // show its permission dialog without a foreground UI, so index.js opened Clipper in
+        // show its permission dialog without a foreground UI, so index.js opened FlipClip in
         // 'permission' mode. Re-request here — where there IS a UI — and, once granted,
         // finish the clip the user asked for. Mirrors the index.js word-count routing.
         if (launchMode === 'permission') {
@@ -297,13 +351,13 @@ export default function App() {
 
           const outcome = await PermissionService.ensure(
             FILE_READ,
-            'Clipper needs read access to capture the text you selected.',
+            'FlipClip needs read access to capture the text you selected.',
           );
           if (outcome !== 'granted') {
             ToastAndroid.show(
               outcome === 'blocked'
-                ? PermissionService.blockedMessage('Clipping')
-                : 'Clipper needs permission to clip',
+                ? PermissionService.blockedMessage('FlipClip')
+                : 'FlipClip needs permission to clip',
               ToastAndroid.LONG,
             );
             PluginManager.closePluginView();
@@ -386,6 +440,8 @@ export default function App() {
         if (launchMode === 'crop') {
           await ClipService.setLaunchMode('normal');
           cropActiveRef.current = true;
+          setCropMode('region');
+          setPendingPlaceClip(null);
           setIsCropping(true);
           setCropLoading(true);
 
@@ -430,6 +486,57 @@ export default function App() {
           return;
         }
 
+        if (launchMode === 'floatmenu') {
+          await ClipService.setLaunchMode('normal');
+          // Capture the underlying reader's file/page so the menu's Clip Region / context works.
+          let menuPath: string | null = null;
+          try {
+            const fileRes = await PluginCommAPI.getCurrentFilePath();
+            let pageNum = 0;
+            if (fileRes && fileRes.success && fileRes.result) {
+              menuPath = fileRes.result;
+              setCurrentFilePath(fileRes.result);
+              setIsNoteFile(!isDocFile(fileRes.result));
+              const pageRes = await PluginCommAPI.getCurrentPageNum();
+              if (pageRes && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) {
+                pageNum = pageRes.result;
+                setCurrentPageNum(pageNum);
+              }
+              NavService.observe(fileRes.result, pageNum);
+            }
+          } catch (e) { /* best-effort */ }
+          const recents = await NavService.getRecents(3);
+          setFloatRecents(recents.map((r) => ({ path: r.path, name: deriveArticleName(r.path), page: r.page })));
+          const pin = await NavService.getPinnedOverride();
+          setFloatPinned(pin ? normalizePath(pin.path) : null);
+          // Live pair the switch will flip between, for the caption.
+          const pair = await NavService.getTogglePair(menuPath ?? currentFilePath);
+          const names: string[] = [];
+          if (pair.current) names.push(deriveArticleName(pair.current.path));
+          if (pair.other) names.push(deriveArticleName(pair.other.path));
+          setFloatPairNames(names);
+          // Offer Undo only when the pending undo targets the note we're on now.
+          const undo = ClipService.getInsertUndo();
+          setFloatCanUndo(!!undo && !!menuPath && normalizePath(undo.notePath) === normalizePath(menuPath));
+          // Convert the native anchor (device pixels) to dp for RN absolute positioning.
+          const rawAnchor: FloatingAnchor | null = FloatingButton.getAnchor();
+          if (rawAnchor) {
+            const r = PixelRatio.get() || 1;
+            setFloatAnchor({
+              x: rawAnchor.x / r,
+              y: rawAnchor.y / r,
+              size: rawAnchor.size / r,
+              screenW: rawAnchor.screenW / r,
+              screenH: rawAnchor.screenH / r,
+            });
+          } else {
+            setFloatAnchor(null);
+          }
+          setShowFloatMenu(true);
+          setContextResolved(true);
+          return;
+        }
+
         // The 'prompt', 'permission', and 'crop' modes have already returned above, so here
         // launchMode is 'normal'. Clear stale prompt state — but NOT when a prompt
         // is active for this launch: a follow-up check (AppState 'active') sees the already-
@@ -464,6 +571,10 @@ export default function App() {
             pageNum = pageRes.result;
             setCurrentPageNum(pageNum);
           }
+
+          // Record this location for the Switch-Document feature (keeps the 2-slot history
+          // warm whenever FlipClip is opened over a note or document). Fire-and-forget.
+          NavService.observe(filePath, pageNum);
         } else {
           setIsNoteFile(true); // Default to note file context
         }
@@ -500,10 +611,37 @@ export default function App() {
 
     const handleAppStateChange = (nextAppState: any) => {
       if (nextAppState === 'active') {
+        // Our view is foreground: pause the native foreground-app watcher (pluginhost IS the
+        // foreground app now, so polling it is wasted dumpsys work).
+        FloatingButton.setWatcherPaused(true);
+        // Show the menu instantly if a long-press is pending, before the async context check,
+        // so the dashboard doesn't flash first.
+        maybeEnterMenu();
         checkContext();
+      } else {
+        // View went to the background (e.g. closePluginView): resume auto-hide polling.
+        FloatingButton.setWatcherPaused(false);
       }
     };
     const appStateSub = AppState.addEventListener('change', handleAppStateChange);
+
+    // Persistent long-press listener: the instant the floating button's menu gesture fires, flip
+    // to the menu view. This runs even while the plugin view is hidden (the RN instance stays
+    // resident), so when the view reopens it is ALREADY showing the menu — no dashboard/clippings
+    // flash before it (AppState 'active' alone lands after a paint). Mirrors maybeEnterMenu's
+    // synchronous anchor set, then runs the context check to fill recents/pair/pinned.
+    const longPressSub = FloatingButton.onLongPress((rawAnchor) => {
+      if (rawAnchor) {
+        const r = PixelRatio.get() || 1;
+        setFloatAnchor({ x: rawAnchor.x / r, y: rawAnchor.y / r, size: rawAnchor.size / r, screenW: rawAnchor.screenW / r, screenH: rawAnchor.screenH / r });
+      } else {
+        setFloatAnchor(null);
+      }
+      FloatingButton.consumePendingMenu(); // we're handling it here; don't double-enter on 'active'
+      setShowFloatMenu(true);
+      setContextResolved(true);
+      checkContext();
+    });
 
     // Reactively refresh UI when background actions add elements
     const unsubscribe = ClipService.subscribe(() => {
@@ -521,6 +659,8 @@ export default function App() {
       subscription = DeviceEventEmitter.addListener('onLaunchModeChange', (mode: string) => {
         if (mode === 'crop') {
           cropActiveRef.current = true;
+          setCropMode('region');
+          setPendingPlaceClip(null);
           const bgShot = ClipService.getPendingCropShot();
           if (bgShot && (Date.now() - bgShot.ts < 60000)) {
             setCropPagePath(bgShot.path);
@@ -538,6 +678,9 @@ export default function App() {
     return () => {
       unsubscribe();
       appStateSub.remove();
+      longPressSub.remove();
+      // Never leave the auto-hide watcher paused if this view tears down.
+      FloatingButton.setWatcherPaused(false);
       if (subscription) {
         subscription.remove();
       }
@@ -569,6 +712,13 @@ export default function App() {
       list = list.filter((c) => c.articleName === activeSourceFilter);
     }
 
+    // 2b. Filter by clip type (Picture Clippings / Text Clippings)
+    if (clipTypeFilter === 'image') {
+      list = list.filter((c) => clipHasImage(c));
+    } else if (clipTypeFilter === 'text') {
+      list = list.filter((c) => !clipHasImage(c));
+    }
+
     // 3. Sort Order
     if (activeSortMode === 'newest') {
       list.sort((a, b) => b.timestamp - a.timestamp);
@@ -577,7 +727,7 @@ export default function App() {
     }
 
     return list;
-  }, [clips, searchQuery, isSearchVisible, activeSourceFilter, activeSortMode]);
+  }, [clips, searchQuery, isSearchVisible, activeSourceFilter, clipTypeFilter, activeSortMode]);
 
   const handleCardPress = (id: string) => {
     if (!isSelectionMode) return;
@@ -687,6 +837,78 @@ export default function App() {
     handleCancel();
   };
 
+  // The single selected image clip (and its first image element) that Erase can act on, or null.
+  const eraseTarget = useMemo(() => {
+    if (selectedIds.length !== 1) return null;
+    const c = clips.find((cl) => cl.id === selectedIds[0]);
+    if (!c || !c.elements) return null;
+    const idx = c.elements.findIndex((e) => e.type === 'image' && !!e.imagePath);
+    if (idx < 0) return null;
+    return { clipId: c.id, index: idx, path: c.elements[idx].imagePath as string };
+  }, [selectedIds, clips]);
+
+  // Open the erase/mask tool on the selected image clip. Reads the image's raw pixel size via the
+  // native decoder (RN Image.getSize can report density-scaled dims) so masks map 1:1.
+  const handleStartErase = async () => {
+    if (!eraseTarget) return;
+    setEraseClipId(eraseTarget.clipId);
+    setEraseElementIndex(eraseTarget.index);
+    setErasePath(eraseTarget.path);
+    setEraseSize({ width: 0, height: 0 });
+    setEraseLoading(true);
+    setShowErase(true);
+    try {
+      const { NativeModules } = require('react-native');
+      const { ImageCropModule } = NativeModules;
+      if (ImageCropModule && typeof ImageCropModule.getImageSize === 'function') {
+        const dim = await ImageCropModule.getImageSize(eraseTarget.path);
+        if (dim && dim.width && dim.height) setEraseSize({ width: dim.width, height: dim.height });
+      }
+    } catch (e) { /* overlay will show at 0 and the user can cancel */ }
+    setEraseLoading(false);
+  };
+
+  const closeErase = () => {
+    setShowErase(false);
+    setEraseClipId(null);
+    setEraseElementIndex(-1);
+    setErasePath(null);
+    setEraseLoading(false);
+  };
+
+  const handleCancelErase = () => { closeErase(); };
+
+  // Paint the chosen rectangles white and repoint the clip at the edited PNG (new path → RN's
+  // Image cache shows it immediately). Masking preserves dimensions, so width/height are unchanged.
+  const handleApplyErase = async (rects: { x: number; y: number; width: number; height: number }[]) => {
+    const clipId = eraseClipId;
+    const idx = eraseElementIndex;
+    const src = erasePath;
+    const size = eraseSize;
+    if (!src || !clipId || idx < 0 || rects.length === 0) { closeErase(); handleCancel(); return; }
+    try {
+      const { NativeModules } = require('react-native');
+      const { ImageCropModule } = NativeModules;
+      const { FileUtils } = require('sn-plugin-lib');
+      const pluginDir = await PluginManager.getPluginDirPath();
+      const dest = `${pluginDir}/clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.png`;
+      const ok = await ImageCropModule.maskRectangles(src, rects, dest);
+      if (ok) {
+        await ClipService.updateElementImage(clipId, idx, dest, size.width, size.height);
+        setClips(ClipService.getClipsSync());
+        try { await FileUtils.deleteFile(src); } catch (e) { /* best-effort */ }
+        ToastAndroid.show('Erased.', ToastAndroid.SHORT);
+      } else {
+        ToastAndroid.show('Erase failed.', ToastAndroid.SHORT);
+      }
+    } catch (e: any) {
+      ToastAndroid.show(`Erase failed: ${e.message}`, ToastAndroid.SHORT);
+    } finally {
+      closeErase();
+      handleCancel();
+    }
+  };
+
   const handleClearAll = async () => {
     // Confirm first. Clear All sits permanently in the bottom bar, one tap away, and it is
     // irreversible: `ClipService.clearClips` deletes each clip's PNG from disk as well as the
@@ -767,7 +989,7 @@ export default function App() {
     // Jump-to-Source stats the source file in shared storage and re-opens it in the reader —
     // both are FILE:READ operations under the host permission system.
     const allowed = await ensurePermissions('Opening the source document', [
-      { permission: FILE_READ, desc: 'Clipper needs read access to reopen the document this clip came from.' },
+      { permission: FILE_READ, desc: 'FlipClip needs read access to reopen the document this clip came from.' },
     ]);
     if (!allowed) return;
 
@@ -871,6 +1093,49 @@ export default function App() {
     const pg = targetPage !== undefined ? targetPage : currentPageNum;
     const isNote = file ? checkIsNoteFile(file) : (currentFilePath ? checkIsNoteFile(currentFilePath) : false);
 
+    // 0. Image files are already a raster "page": crop them directly. Copy to a temp first,
+    // because the crop save/cancel paths DELETE cropPagePath — we must never delete the
+    // user's original image.
+    if (file && isImageFile(file)) {
+      const allowed = await ensurePermissions('Region capture', [
+        { permission: FILE_READ, desc: 'FlipClip needs read access to the image you are cropping.' },
+      ]);
+      if (!allowed) { cropActiveRef.current = false; setIsCropping(false); setCropLoading(false); return; }
+      cropActiveRef.current = true;
+      setIsCropping(true);
+      setCropLoading(true);
+      try {
+        const { NativeModules } = require('react-native');
+        const { ImageCropModule } = NativeModules;
+        const { FileUtils: SnFileUtils } = require('sn-plugin-lib');
+        const pluginDir = await PluginManager.getPluginDirPath();
+        const src = file.startsWith('file://') ? file.substring(7) : file;
+        const temp = `${pluginDir}/temp_crop_page_${Date.now()}.png`;
+        await SnFileUtils.copyFile(src, temp);
+        // Use the NATIVE decoder for the size, matching cropImage's coordinate space exactly
+        // (RN Image.getSize can report density-scaled dims, which collapses the crop to the
+        // upper-left corner).
+        let w = 0;
+        let h = 0;
+        if (ImageCropModule && typeof ImageCropModule.getImageSize === 'function') {
+          const dim = await ImageCropModule.getImageSize(temp);
+          if (dim && dim.width && dim.height) { w = dim.width; h = dim.height; }
+        }
+        if (w > 0 && h > 0) {
+          setCropImageSize({ width: w, height: h });
+          setCropPagePath(temp);
+          setCropLoading(false);
+        } else {
+          ToastAndroid.show('Could not read the image.', ToastAndroid.SHORT);
+          cropActiveRef.current = false; setIsCropping(false); setCropLoading(false);
+        }
+      } catch (e) {
+        ToastAndroid.show('Could not open the image for cropping.', ToastAndroid.SHORT);
+        cropActiveRef.current = false; setIsCropping(false); setCropLoading(false);
+      }
+      return;
+    }
+
     // 1. Consume the fresh reader screenshot captured in background by index.js ONLY for DOC files
     if (!isNote) {
       const bgShot = ClipService.getPendingCropShot();
@@ -898,7 +1163,7 @@ export default function App() {
     // getPageSize) reads the user's document, so gate on FILE:READ. The crop itself and the
     // saved PNG live in the plugin's private dir, which is exempt.
     const allowed = await ensurePermissions('Region capture', [
-      { permission: FILE_READ, desc: 'Clipper needs read access to render the page you are cropping.' },
+      { permission: FILE_READ, desc: 'FlipClip needs read access to render the page you are cropping.' },
     ]);
     if (!allowed) {
       cropActiveRef.current = false;
@@ -1112,9 +1377,277 @@ export default function App() {
     }
   };
 
+  // Enter the drag-to-place flow for a single clip (text or image): render the current note page
+  // into the crop overlay (reusing all its multi-layer render logic) and switch the overlay to
+  // placement mode. The box the user draws is routed to placeSingleTextClip / placeSingleImageClip
+  // via the overlay's onSave (handleCropOverlaySave branches on the clip's content).
+  const startManualPlacement = async (clip: ClipItem) => {
+    setPendingPlaceClip(clip);
+    setCropMode('placeText');
+    await handleStartCropping(currentFilePath || undefined, currentPageNum);
+  };
+
+  // UUIDs currently on a page — snapshot BEFORE an insert so we can find the NEW elements after.
+  const snapshotPageUuids = async (notePath: string, page: number): Promise<Set<string>> => {
+    const set = new Set<string>();
+    try {
+      const { PluginFileAPI } = require('sn-plugin-lib');
+      const res = await PluginFileAPI.getElements(page, notePath) as any;
+      if (res && res.success && Array.isArray(res.result)) {
+        for (const el of res.result) if (el && el.uuid) set.add(el.uuid);
+      }
+    } catch (e) { /* best-effort */ }
+    return set;
+  };
+
+  // numInPage of elements added since the `before` snapshot — the targets a one-tap undo deletes.
+  const capturedNewNums = async (notePath: string, page: number, before: Set<string>): Promise<number[]> => {
+    try {
+      const { PluginFileAPI } = require('sn-plugin-lib');
+      const res = await PluginFileAPI.getElements(page, notePath) as any;
+      if (res && res.success && Array.isArray(res.result)) {
+        return res.result
+          .filter((el: any) => el && el.uuid && !before.has(el.uuid) && typeof el.numInPage === 'number')
+          .map((el: any) => el.numInPage as number);
+      }
+    } catch (e) { /* best-effort */ }
+    return [];
+  };
+
+  // Record the one-tap undo for a just-placed single clip. When auto-remove is on we keep the
+  // clip's backing file (so undo can fully restore it); otherwise the clip is still in FlipClip
+  // and undo only removes the note element(s).
+  const recordPlacementUndo = async (notePath: string, page: number, nums: number[], clip: ClipItem, autoRemove: boolean) => {
+    let snapshots: ClipItem[] = [];
+    if (autoRemove) {
+      snapshots = await ClipService.removeClipsKeepingFiles([clip.id]);
+    }
+    await ClipService.recordInsertUndo({ notePath, page, nums, clips: snapshots });
+    setClips(ClipService.getClipsSync());
+  };
+
+  // Remember the last placement box (page-pixel rect) so the next placement starts from it
+  // instead of a fresh 60%-centered box.
+  const lastPlaceRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+
+  // Insert the pending text clip at the box the user drew (rect is in page-pixel space, which is
+  // exactly the coordinate space insertText uses). The box sets the start/left/width; the height
+  // auto-grows to fit the text so nothing is clipped if the box was drawn short.
+  const placeSingleTextClip = async (rect: { x: number; y: number; width: number; height: number }) => {
+    const clip = pendingPlaceClip;
+    const tempPage = cropPagePath;
+    const cleanup = () => {
+      if (tempPage) {
+        const { FileUtils } = require('sn-plugin-lib');
+        FileUtils.deleteFile(tempPage).catch(() => {});
+      }
+      setCropPagePath(null);
+      setPendingPlaceClip(null);
+      setCropMode('region');
+      cropActiveRef.current = false;
+      setIsCropping(false);
+    };
+
+    if (!clip) { cleanup(); PluginManager.closePluginView(); return; }
+
+    const allowed = await ensurePermissions('Placing text', [
+      { permission: FILE_READ, desc: 'FlipClip needs read access to place text on the current note page.' },
+    ]);
+    if (!allowed) { cleanup(); PluginManager.closePluginView(); return; }
+
+    try {
+      const { PluginNoteAPI } = require('sn-plugin-lib');
+      const notePath = currentFilePath as string;
+      const page = currentPageNum;
+
+      const text = (clip.elements || [])
+        .filter((e) => e.type === 'text' && !!e.text)
+        .map((e) => e.text)
+        .join('\n\n')
+        .trim();
+      if (!text) {
+        ToastAndroid.show('Nothing to place.', ToastAndroid.SHORT);
+        cleanup();
+        PluginManager.closePluginView();
+        return;
+      }
+
+      const fontSize = insertFontSize;
+      const lineHeight = Math.round(fontSize * 1.2);
+      const descenderPad = Math.round(lineHeight * 0.35);
+      const left = Math.max(0, Math.round(rect.x));
+      const top = Math.max(0, Math.round(rect.y));
+      const width = Math.max(fontSize * 4, Math.round(rect.width));
+      const charsPerLine = Math.max(1, Math.floor(width / (fontSize * 0.5)));
+      const wrap = measureWrappedText(text, charsPerLine);
+      const estH = wrap.lines * lineHeight;
+      const boxH = Math.max(Math.round(rect.height), estH + descenderPad);
+      lastPlaceRectRef.current = { x: left, y: top, width, height: boxH };
+
+      const beforeUuids = await snapshotPageUuids(notePath, page);
+      await PluginNoteAPI.saveCurrentNote();
+      await PluginNoteAPI.insertText({
+        textContentFull: text,
+        textRect: { left, top, right: left + width, bottom: top + boxH },
+        fontSize,
+        textAlign: 0,
+        textBold: 0,
+        textItalics: 0,
+        textFrameWidthType: 0,
+        textFrameStyle: 0,
+        textEditable: 1,
+      });
+
+      // Optional ↗ jump link to the source, placed just under the box's bottom-right.
+      const linkSource = await StorageService.getInsertSourceLink();
+      const srcEl = (clip.elements || []).find((e) => !!e.documentPath);
+      if (linkSource && srcEl && srcEl.documentPath) {
+        const fontSizeLink = Math.round(fontSize * 0.8);
+        const linkHeight = Math.round(fontSizeLink * 1.35);
+        const iconWidth = Math.round(fontSizeLink * 1.4);
+        const destPath = srcEl.documentPath;
+        const destPage = srcEl.documentPage ?? 0;
+        const linkType = destPath.endsWith('.note') || destPath.endsWith('.not')
+          ? (srcEl.documentPage !== undefined ? 0 : 1)
+          : 2;
+        const iconTop = top + boxH + Math.round(lineHeight * 0.2);
+        try {
+          await PluginNoteAPI.insertTextLink({
+            destPath,
+            destPage: destPage || 0,
+            style: 0,
+            linkType,
+            rect: { left: left + width - iconWidth, top: iconTop, right: left + width, bottom: iconTop + linkHeight },
+            fontSize: fontSizeLink,
+            fullText: '↗',
+            showText: '↗',
+            isItalic: 0,
+          });
+        } catch (e) { /* link is best-effort; the text is already placed */ }
+      }
+
+      await PluginNoteAPI.saveCurrentNote();
+
+      const nums = await capturedNewNums(notePath, page, beforeUuids);
+      const autoRemove = await StorageService.getAutoRemoveInserted();
+      await recordPlacementUndo(notePath, page, nums, clip, autoRemove);
+      ToastAndroid.show('Text placed! (double-tap → Undo to remove)', ToastAndroid.SHORT);
+    } catch (e: any) {
+      if (!reportPermissionError(e)) {
+        ToastAndroid.show(`Place failed: ${e.message}`, ToastAndroid.SHORT);
+      }
+    } finally {
+      cleanup();
+      PluginManager.closePluginView();
+    }
+  };
+
+  // Place a single IMAGE clip at the box the user drew (rect in page-pixel space = the space
+  // insertImage/modifyElements use). The image is scaled to FIT inside the box preserving aspect,
+  // and never upscaled past its source (upscaling makes the note's OpenCV resize read past the
+  // bitmap and crash the note app). The user can draw the box over existing content to overlay,
+  // or clear of it to avoid overlap — so there is always "room".
+  const placeSingleImageClip = async (rect: { x: number; y: number; width: number; height: number }) => {
+    const clip = pendingPlaceClip;
+    const tempPage = cropPagePath;
+    const cleanup = () => {
+      if (tempPage) {
+        const { FileUtils } = require('sn-plugin-lib');
+        FileUtils.deleteFile(tempPage).catch(() => {});
+      }
+      setCropPagePath(null);
+      setPendingPlaceClip(null);
+      setCropMode('region');
+      cropActiveRef.current = false;
+      setIsCropping(false);
+    };
+
+    const imgEl = clip?.elements?.find((e) => e.type === 'image' && !!e.imagePath);
+    if (!clip || !imgEl || !imgEl.imagePath) { cleanup(); PluginManager.closePluginView(); return; }
+
+    const allowed = await ensurePermissions('Placing the image', [
+      { permission: FILE_READ, desc: 'FlipClip needs read access to lay out the image on the note page.' },
+      { permission: FILE_WRITE, desc: 'FlipClip needs write access to place the image in your note.' },
+    ]);
+    if (!allowed) { cleanup(); PluginManager.closePluginView(); return; }
+
+    try {
+      const { PluginNoteAPI, PluginFileAPI, PluginCommAPI, FileUtils } = require('sn-plugin-lib');
+      const fileRes = await PluginCommAPI.getCurrentFilePath();
+      const notePath = (fileRes && fileRes.success && fileRes.result) ? fileRes.result : currentFilePath;
+      const pageRes = await PluginCommAPI.getCurrentPageNum();
+      const targetPage = (pageRes && pageRes.success && pageRes.result !== undefined && pageRes.result !== null) ? pageRes.result : currentPageNum;
+
+      const left = Math.max(0, Math.round(rect.x));
+      const top = Math.max(0, Math.round(rect.y));
+      const boxW = Math.max(1, Math.round(rect.width));
+      const boxH = Math.max(1, Math.round(rect.height));
+      lastPlaceRectRef.current = { x: left, y: top, width: boxW, height: boxH };
+
+      const beforeUuids = await snapshotPageUuids(notePath, targetPage);
+      await PluginNoteAPI.saveCurrentNote();
+      await PluginNoteAPI.insertImage(imgEl.imagePath);
+      await PluginNoteAPI.saveCurrentNote();
+
+      const lastRes = await PluginFileAPI.getLastElement() as any;
+      const el = (lastRes && lastRes.result) ? lastRes.result : null;
+      if (el && el.type === 200 && el.picture && el.picture.rect) {
+        const r = el.picture.rect;
+        const natW = r.right - r.left;
+        const natH = r.bottom - r.top;
+        if (natW > 0 && natH > 0) {
+          const scale = Math.min(boxW / natW, boxH / natH, 1); // never upscale past source
+          const targetW = Math.max(1, Math.round(natW * scale));
+          const targetH = Math.max(1, Math.round(natH * scale));
+          const picturePath = el.picture.picturePath;
+          if (picturePath && !(await FileUtils.exists(picturePath))) {
+            try { await FileUtils.copyFile(imgEl.imagePath, picturePath); } catch (e) { /* fall through */ }
+          }
+          const modified = {
+            ...el,
+            pageNum: targetPage,
+            layerNum: 0,
+            picture: { ...el.picture, rect: { left, top, right: left + targetW, bottom: top + targetH } },
+          };
+          const modRes = await PluginFileAPI.modifyElements(notePath, targetPage, [modified]) as any;
+          if (modRes && modRes.success === false && PermissionService.isPermissionError(modRes)) {
+            reportPermissionError(modRes);
+          }
+          await PluginNoteAPI.saveCurrentNote();
+        }
+      }
+
+      const nums = await capturedNewNums(notePath, targetPage, beforeUuids);
+      const autoRemove = await StorageService.getAutoRemoveInserted();
+      await recordPlacementUndo(notePath, targetPage, nums, clip, autoRemove);
+      ToastAndroid.show('Image placed! (double-tap → Undo to remove)', ToastAndroid.SHORT);
+    } catch (e: any) {
+      if (!reportPermissionError(e)) {
+        ToastAndroid.show(`Place failed: ${e.message}`, ToastAndroid.SHORT);
+      }
+    } finally {
+      cleanup();
+      PluginManager.closePluginView();
+    }
+  };
+
+  // Routes the crop overlay's save to the right action for the current mode (and clip content).
+  const handleCropOverlaySave = (rect: { x: number; y: number; width: number; height: number }) => {
+    if (cropMode === 'placeText') {
+      const hasImage = !!pendingPlaceClip?.elements?.some((e) => e.type === 'image' && !!e.imagePath);
+      if (hasImage) placeSingleImageClip(rect);
+      else placeSingleTextClip(rect);
+    } else {
+      runCropSave(rect);
+    }
+  };
+
   const handleCancelCropping = () => {
     cropActiveRef.current = false;
     setIsCropping(false);
+    // Reset placement mode so a cancelled placement doesn't leak into the next region crop.
+    setCropMode('region');
+    setPendingPlaceClip(null);
     ClipService.clearPendingCropShot();
     // Don't leave the full-page capture (potentially sensitive document content) on disk
     // when the user abandons the crop.
@@ -1141,6 +1674,23 @@ export default function App() {
 
   const runInsertClips = async (clipsToInsert: ClipItem[]) => {
     if (clipsToInsert.length === 0) return;
+
+    // Manual placement: for a SINGLE clip going into a note (text-only OR image-only), let the
+    // user drag a box to position it — so they can overlay existing content or size it to avoid
+    // overlap, and there is always "room". Batches and non-note targets keep the proven
+    // auto-layout engine below. (Opt-out in Settings.)
+    if (placeTextManually && clipsToInsert.length === 1 && !insertingRef.current) {
+      const only = clipsToInsert[0];
+      const els = only.elements || [];
+      const textOnly = els.length > 0 && els.every((e) => e.type === 'text' && !!e.text && e.text.trim().length > 0);
+      const imageOnly = els.length > 0 && els.every((e) => e.type === 'image' && !!e.imagePath);
+      const noteTarget = !!currentFilePath && checkIsNoteFile(currentFilePath);
+      if ((textOnly || imageOnly) && noteTarget) {
+        startManualPlacement(only);
+        return;
+      }
+    }
+
     if (insertingRef.current) return; // ignore re-entrant taps while an insert is in progress
     // Claim the guard BEFORE the first await: the permission gate below is async, and two
     // quick taps would otherwise both get past this check and insert twice.
@@ -1159,10 +1709,10 @@ export default function App() {
     // who denied it.
     const needsWrite = clipsToInsert.some(clipHasImage);
     const requests = [
-      { permission: FILE_READ, desc: 'Clipper needs read access to lay out clips on the current note page.' },
+      { permission: FILE_READ, desc: 'FlipClip needs read access to lay out clips on the current note page.' },
     ];
     if (needsWrite) {
-      requests.push({ permission: FILE_WRITE, desc: 'Clipper needs write access to place images in your note.' });
+      requests.push({ permission: FILE_WRITE, desc: 'FlipClip needs write access to place images in your note.' });
     }
     const allowed = await ensurePermissions('Inserting clips', requests);
     if (!allowed) {
@@ -1380,6 +1930,16 @@ export default function App() {
       const getElemBottom = (el: any, pageHeight: number): number => {
         if (!el) return 0;
         if (el.status === -1 || el.status === 2) return 0; // Skip explicitly deleted elements
+
+        // Ignore a page-background / template element. These come back from getElements with a
+        // rect spanning the ENTIRE page; counting one as occupied content pins the start-Y at the
+        // bottom and makes a nearly-empty page report "no room" (the reported "no space" bug). A
+        // real full-page drawing is rare; the trade is worth not blocking inserts on blank pages.
+        const primaryRect = (el.picture && el.picture.rect) || (el.textBox && el.textBox.textRect) || el.textRect || null;
+        if (primaryRect && typeof primaryRect.top === 'number' && typeof primaryRect.bottom === 'number') {
+          const spansPage = primaryRect.top <= pageHeight * 0.05 && primaryRect.bottom >= pageHeight * 0.95;
+          if (spansPage) return 0;
+        }
 
         let bottom = 0;
 
@@ -1814,7 +2374,7 @@ export default function App() {
           // Converting this flow to ask-then-create is deferred to 0.3.1 (design review D2).
           await askUserConfirmation(
             'Page Full',
-            'No more room in this note. Add a new page to the note, then reopen Clipper and tap Insert to continue.',
+            'No more room in this note. Add a new page to the note, then reopen FlipClip and tap Insert to continue.',
             'OK'
           );
           stoppedEarlyOutOfSpace = true;
@@ -1853,7 +2413,7 @@ export default function App() {
         // close exactly like a normal finish, so the user would have no idea why the batch
         // stopped or that tapping Insert again continues it.
         ToastAndroid.show(
-          'Stopped after 20 pages. The remaining clips are still in Clipper; tap Insert again to continue.',
+          'Stopped after 20 pages. The remaining clips are still in FlipClip; tap Insert again to continue.',
           ToastAndroid.LONG
         );
         PluginManager.closePluginView();
@@ -1863,10 +2423,10 @@ export default function App() {
       } else if (!allPersisted) {
         // Something was attempted but didn't persist. Keep the clips AND the plugin view open,
         // so the failure is visible rather than looking like a successful insert.
-        ToastAndroid.show('Some clips could not be inserted; they are kept in Clipper.', ToastAndroid.LONG);
+        ToastAndroid.show('Some clips could not be inserted; they are kept in FlipClip.', ToastAndroid.LONG);
       } else {
         ToastAndroid.show(
-          autoRemove ? 'Clips inserted successfully!' : 'Clips inserted (kept in Clipper)',
+          autoRemove ? 'Clips inserted successfully!' : 'Clips inserted (kept in FlipClip)',
           ToastAndroid.SHORT
         );
         PluginManager.closePluginView();
@@ -1897,8 +2457,8 @@ export default function App() {
     // Building a ToC scans every page (getElements/getTitles/getPageSize/recognizeElements)
     // and then writes the ToC page (insertText/insertTextLink/replaceElements/deleteElements).
     const allowed = await ensurePermissions('Building the Table of Contents', [
-      { permission: FILE_READ, desc: 'Clipper needs read access to scan this note for headings.' },
-      { permission: FILE_WRITE, desc: 'Clipper needs write access to write the Table of Contents page.' },
+      { permission: FILE_READ, desc: 'FlipClip needs read access to scan this note for headings.' },
+      { permission: FILE_WRITE, desc: 'FlipClip needs write access to write the Table of Contents page.' },
     ]);
     if (!allowed) return;
 
@@ -1975,8 +2535,8 @@ export default function App() {
       );
 
       if (res.success) {
-        // The ToC now lives in the note — clear the Clipper snapshot so the ToC tab doesn't keep
-        // showing a stale headings list next time Clipper opens.
+        // The ToC now lives in the note — clear the FlipClip snapshot so the ToC tab doesn't keep
+        // showing a stale headings list next time FlipClip opens.
         await StorageService.clearTocState(currentFilePath);
         setHeadings([]);
         setTocUpdatedAt(null);
@@ -2008,6 +2568,186 @@ export default function App() {
 
   const handleBuildToc = () => { runTocBuild(); };
 
+  // ---- Floating long-press menu ----
+  // List openable documents/notes/images under the device's shared-storage roots, for the
+  // "Switch to… → Browse" picker. One level per root; FILE:READ-gated (declared).
+  // Top-level folders for the Browse navigator, under the storage root derived from the open file.
+  const browseRoots = useMemo<PickItem[]>(() => {
+    let root = '/storage/emulated/0';
+    if (currentFilePath) {
+      const n = normalizePath(currentFilePath);
+      const m = n.match(/^(.*?)\/(Document|Note|EXPORT|INBOX|MyStyle|SCREENSHOT)\//);
+      if (m) root = m[1];
+    }
+    return ['Document', 'Note', 'EXPORT', 'INBOX'].map((d) => ({ name: d, path: `${root}/${d}`, isDir: true }));
+  }, [currentFilePath]);
+
+  // One directory level: folders first, then openable files; non-openable files are hidden.
+  const listDir = useCallback(async (dir: string): Promise<PickItem[]> => {
+    const { FileUtils } = require('sn-plugin-lib');
+    const baseName = (p: string) => p.substring(p.lastIndexOf('/') + 1);
+    const hasExt = (name: string) => /\.[a-z0-9]{1,5}$/i.test(name);
+    let files: any[];
+    try {
+      files = await FileUtils.listFiles(dir);
+    } catch (e) {
+      return [];
+    }
+    if (!Array.isArray(files)) return [];
+    const folders: PickItem[] = [];
+    const docs: PickItem[] = [];
+    for (const f of files) {
+      // listFiles entries may be strings, {path}, {uri}, or {name} — normalize to a path.
+      let p: string | null = null;
+      if (typeof f === 'string') p = f;
+      else if (f && typeof f.path === 'string') p = f.path;
+      else if (f && typeof f.uri === 'string') p = f.uri;
+      else if (f && typeof f.name === 'string') p = `${dir}/${f.name}`;
+      if (!p) continue;
+      const name = baseName(normalizePath(p));
+      if (isOpenableFile(p)) docs.push({ path: p, name, isDir: false });
+      else if (!hasExt(name)) folders.push({ path: p, name, isDir: true });
+    }
+    folders.sort((a, b) => a.name.localeCompare(b.name));
+    docs.sort((a, b) => a.name.localeCompare(b.name));
+    return [...folders, ...docs];
+  }, []);
+
+  // Picture Clippings / Text Clippings: open the dashboard filtered to that clip type.
+  const handleFloatPictureClips = () => {
+    setShowFloatMenu(false);
+    setActiveTab('clips');
+    setActiveSourceFilter(null);
+    setSearchQuery('');
+    setClipTypeFilter('image');
+  };
+  const handleFloatTextClips = () => {
+    setShowFloatMenu(false);
+    setActiveTab('clips');
+    setActiveSourceFilter(null);
+    setSearchQuery('');
+    setClipTypeFilter('text');
+  };
+  const handleFloatClipRegion = () => {
+    setShowFloatMenu(false);
+    // Always a region crop — clear any leftover text-placement mode so routing is correct even
+    // if a prior placement render failed before the overlay (and its reset paths) ran.
+    setCropMode('region');
+    setPendingPlaceClip(null);
+    const f = currentFilePath;
+    const bgShot = ClipService.getPendingCropShot();
+    const freshShot = bgShot && (Date.now() - bgShot.ts < 60000);
+    if (freshShot) {
+      cropActiveRef.current = true;
+      setCropPagePath(bgShot.path);
+      setCropImageSize({ width: bgShot.width, height: bgShot.height });
+      setCropLoading(false);
+      setIsCropping(true);
+      return;
+    }
+    // Notes render from the file; images crop directly (both handled in handleStartCropping).
+    if (f && (checkIsNoteFile(f) || isImageFile(f))) {
+      cropActiveRef.current = true;
+      setIsCropping(true);
+      setCropLoading(true);
+      handleStartCropping(f, currentPageNum);
+    } else {
+      // PDFs/EPUBs need the reader visible to screenshot: close the plugin view, let the
+      // reader repaint, capture it, then reopen straight into the crop UI.
+      captureFromReaderAndReopen();
+    }
+  };
+  const handleFloatPinTarget = async (item: PickItem) => {
+    await NavService.setPinnedOverride({ path: item.path, page: item.page ?? 0 });
+    setFloatPinned(normalizePath(item.path));
+    setShowFloatMenu(false);
+    FloatingButton.refreshState();
+    ToastAndroid.show(`Pinned: ${item.name}. A tap flips this ⇄ ${item.name}.`, ToastAndroid.SHORT);
+    PluginManager.closePluginView();
+  };
+
+  const handleFloatUndo = async () => {
+    setShowFloatMenu(false);
+    const u = ClipService.getInsertUndo();
+    if (!u) { PluginManager.closePluginView(); return; }
+    if (!currentFilePath || normalizePath(currentFilePath) !== normalizePath(u.notePath)) {
+      ToastAndroid.show('Open the note you inserted into, then undo.', ToastAndroid.LONG);
+      PluginManager.closePluginView();
+      return;
+    }
+    const allowed = await ensurePermissions('Undoing the insert', [
+      { permission: FILE_READ, desc: 'FlipClip needs read access to the note to undo the insert.' },
+      { permission: FILE_WRITE, desc: 'FlipClip needs write access to remove the inserted element.' },
+    ]);
+    if (!allowed) { PluginManager.closePluginView(); return; }
+    try {
+      const { PluginFileAPI, PluginNoteAPI } = require('sn-plugin-lib');
+      if (u.nums && u.nums.length > 0) {
+        await PluginFileAPI.deleteElements(u.notePath, u.page, u.nums);
+        await PluginNoteAPI.saveCurrentNote();
+      }
+      if (u.clips && u.clips.length > 0) {
+        await ClipService.restoreClips(u.clips);
+        setClips(ClipService.getClipsSync());
+      }
+      ClipService.consumeInsertUndo();
+      setFloatCanUndo(false);
+      ToastAndroid.show('Undone.', ToastAndroid.SHORT);
+    } catch (e: any) {
+      if (!reportPermissionError(e)) ToastAndroid.show(`Undo failed: ${e.message}`, ToastAndroid.SHORT);
+    } finally {
+      PluginManager.closePluginView();
+    }
+  };
+
+  const handleFloatClearOverride = async () => {
+    await NavService.clearPinnedOverride();
+    setFloatPinned(null);
+    setShowFloatMenu(false);
+    FloatingButton.refreshState();
+    ToastAndroid.show('Override cleared — tapping flips the last 2 documents.', ToastAndroid.SHORT);
+    PluginManager.closePluginView();
+  };
+  const handleFloatClose = () => {
+    setShowFloatMenu(false);
+    PluginManager.closePluginView();
+  };
+
+  if (showFloatMenu) {
+    return (
+      <FloatingMenu
+        recents={floatRecents}
+        pairNames={floatPairNames}
+        pinnedPath={floatPinned}
+        browseRoots={browseRoots}
+        anchor={floatAnchor}
+        onClipRegion={handleFloatClipRegion}
+        onPictureClips={handleFloatPictureClips}
+        onTextClips={handleFloatTextClips}
+        onPinTarget={handleFloatPinTarget}
+        onClearOverride={handleFloatClearOverride}
+        canUndo={floatCanUndo}
+        onUndo={handleFloatUndo}
+        listDir={listDir}
+        onClose={handleFloatClose}
+      />
+    );
+  }
+
+  if (showErase) {
+    return (
+      <View style={styles.cropRoot}>
+        <EraseOverlay
+          pagePath={erasePath}
+          imageSize={eraseSize}
+          loading={eraseLoading}
+          onCancel={handleCancelErase}
+          onApply={handleApplyErase}
+        />
+      </View>
+    );
+  }
+
   if (isCropping) {
     return (
       <View style={styles.cropRoot}>
@@ -2016,7 +2756,11 @@ export default function App() {
           imageSize={cropImageSize}
           loading={cropLoading}
           onCancel={handleCancelCropping}
-          onSave={runCropSave}
+          onSave={handleCropOverlaySave}
+          title={cropMode === 'placeText' ? 'Place clip' : undefined}
+          saveLabel={cropMode === 'placeText' ? 'Place here' : undefined}
+          loadingLabel={cropMode === 'placeText' ? 'Preparing page…' : undefined}
+          initialRect={cropMode === 'placeText' ? lastPlaceRectRef.current : null}
         />
       </View>
     );
@@ -2093,7 +2837,7 @@ export default function App() {
                 <Image source={require('../assets/icon/close.png')} style={styles.iconImage} />
               </Pressable>
             </View>
-            <Text style={styles.title}>Clipper</Text>
+            <Text style={styles.title}>FlipClip</Text>
             <View style={styles.headerIcons}>
               <Pressable onPress={toggleSearch} style={styles.iconButton} testID="search-btn">
                 <Image source={require('../assets/icon/search.png')} style={styles.iconImage} />
@@ -2142,11 +2886,17 @@ export default function App() {
                   ? `${selectedIds.length} of ${processedClips.length} clip(s) selected` 
                   : `${processedClips.length} clip(s) visible`}
               </Text>
-              {(activeSourceFilter !== null || (isSearchVisible && searchQuery.trim() !== '')) && (
+              {(activeSourceFilter !== null || clipTypeFilter !== 'all' || (isSearchVisible && searchQuery.trim() !== '')) && (
                 <View style={styles.headerChips}>
                   {isSearchVisible && searchQuery.trim() !== '' && (
                     <Pressable onPress={() => setSearchQuery('')} style={styles.headerChip}>
                       <Text style={styles.headerChipText} numberOfLines={1}>Search: "{searchQuery}"</Text>
+                      <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
+                    </Pressable>
+                  )}
+                  {clipTypeFilter !== 'all' && (
+                    <Pressable onPress={() => setClipTypeFilter('all')} style={styles.headerChip}>
+                      <Text style={styles.headerChipText} numberOfLines={1}>{clipTypeFilter === 'image' ? 'Picture clippings' : 'Text clippings'}</Text>
                       <Image source={require('../assets/icon/clear.png')} style={styles.headerChipClearImage} />
                     </Pressable>
                   )}
@@ -2179,6 +2929,7 @@ export default function App() {
               onCardLongPress={handleCardLongPress}
               onOpenSource={handleOpenSource}
               showSource={showSourceInClipper}
+              onInsert={isNoteFile && !isSelectionMode ? (clip) => runInsertClips([clip]) : undefined}
             />
 
             {/* Footer Actions Area */}
@@ -2205,6 +2956,11 @@ export default function App() {
                         <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
                         <HighContrastButton label="Cancel" onPress={handleCancel} />
                       </View>
+                      {eraseTarget && (
+                        <View style={styles.btnRow}>
+                          <HighContrastButton label="Erase areas (image)" onPress={handleStartErase} />
+                        </View>
+                      )}
                     </>
                   ) : (
                     <>
@@ -2217,6 +2973,11 @@ export default function App() {
                         <HighContrastButton label="Unmerge" onPress={handleUnmergeSelected} disabled={unmergeableCount === 0} />
                         <HighContrastButton label="Cancel" onPress={handleCancel} />
                       </View>
+                      {eraseTarget && (
+                        <View style={styles.btnRow}>
+                          <HighContrastButton label="Erase areas (image)" onPress={handleStartErase} />
+                        </View>
+                      )}
                     </>
                   )}
                 </>
@@ -2313,6 +3074,11 @@ export default function App() {
             setCombineInserted(value);
             StorageService.setCombineInserted(value);
           }}
+          placeTextManually={placeTextManually}
+          onPlaceTextChange={(value) => {
+            setPlaceTextManually(value);
+            StorageService.setPlaceTextManually(value);
+          }}
           showSourceInClipper={showSourceInClipper}
           onShowSourceChange={(value) => {
             setShowSourceInClipper(value);
@@ -2337,6 +3103,7 @@ export default function App() {
             // Restore every setting to its application default.
             setAutoRemoveInserted(true); StorageService.setAutoRemoveInserted(true);
             setCombineInserted(false); StorageService.setCombineInserted(false);
+            setPlaceTextManually(true); StorageService.setPlaceTextManually(true);
             setInsertFontSize(DEFAULT_INSERT_FONT_SIZE); StorageService.setInsertFontSize(DEFAULT_INSERT_FONT_SIZE);
             setShowSourceInClipper(true); StorageService.setShowSourceInClipper(true);
             setInsertSourceLink(true); StorageService.setInsertSourceLink(true);

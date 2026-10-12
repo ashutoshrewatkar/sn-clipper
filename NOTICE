@@ -1,0 +1,21 @@
+FlipClip
+========
+
+FlipClip is a derivative work of "sn-clipper" by Vinod Nair.
+
+Original work
+-------------
+  sn-clipper — https://github.com/vmnair/sn-clipper
+  Copyright (c) 2026 Vinod Nair
+  Licensed under the MIT License (see the LICENSE file, retained in full).
+
+Modifications
+-------------
+  The FlipClip feature layer — the always-on-top document-switching floating
+  button, region/menu clipping, the erase/mask tool, drag-to-place insertion,
+  one-tap undo, and related changes and fixes.
+  Copyright (c) 2026 Ashutosh Rewatkar
+
+FlipClip is distributed under the MIT License. The original copyright and
+permission notice from sn-clipper is retained in LICENSE as required by that
+license. Per-file author headers from the original project are left in place.
